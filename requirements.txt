@@ -1,4 +1,4 @@
-py-clob-client>=0.20
+py-clob-client-v2>=1.1.0
 web3>=6.15
 anthropic>=0.40
 pydantic>=2.7

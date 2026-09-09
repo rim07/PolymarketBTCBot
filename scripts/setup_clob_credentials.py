@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from py_clob_client.client import ClobClient
+from py_clob_client_v2 import ClobClient
 
 import config
 
@@ -22,7 +22,7 @@ def main() -> None:
         signature_type=config.SIGNATURE_TYPE,
         funder=config.FUNDER_ADDRESS or None,
     )
-    creds = client.create_or_derive_api_creds()
+    creds = client.create_or_derive_api_key()
     print("\nAdd these to your .env file (do not commit them):\n")
     print(f"CLOB_API_KEY={creds.api_key}")
     print(f"CLOB_API_SECRET={creds.api_secret}")
