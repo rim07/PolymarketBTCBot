@@ -42,8 +42,16 @@ def window_slug(window_start: datetime) -> str:
     return f"{config.MARKET_SLUG_PREFIX}{epoch}"
 
 
-def _query_gamma_by_slug(slug: str) -> dict | None:
-    url = f"{config.GAMMA_API_BASE}/markets?" + urllib.parse.urlencode({"slug": slug})
+def _query_gamma_by_slug(slug: str, closed: Optional[bool] = None) -> dict | None:
+    params = {"slug": slug}
+    if closed is not None:
+        # Confirmed empirically: Gamma's /markets defaults to active-only when
+        # `closed` is omitted — a slug for an already-closed market returns []
+        # unless `closed=true` is passed explicitly. This is what silently broke
+        # resolution detection (redeem_positions.py) — every post-close lookup
+        # came back empty, so a position could never be detected as resolved.
+        params["closed"] = "true" if closed else "false"
+    url = f"{config.GAMMA_API_BASE}/markets?" + urllib.parse.urlencode(params)
     rows = http_json(url, retries=1, timeout=6)
     if not rows:
         return None
@@ -99,9 +107,11 @@ def discover_market(now: datetime | None = None, timeout_seconds: float = None) 
 
 def get_market_by_slug(slug: str) -> Optional[dict]:
     """Raw Gamma row lookup by slug, used post-resolution (e.g. by
-    scripts/redeem_positions.py) to check settlement status/outcome. Returns
-    None rather than raising — resolution can lag a few minutes after close."""
+    scripts/redeem_positions.py) to check settlement status/outcome. Always
+    queries closed=true, since this is only ever called after a window has
+    ended. Returns None rather than raising — resolution can lag a few
+    minutes after close, or this can be called before it's closed at all."""
     try:
-        return _query_gamma_by_slug(slug)
+        return _query_gamma_by_slug(slug, closed=True)
     except Exception:
         return None

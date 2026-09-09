@@ -20,6 +20,12 @@ class OpenPosition:
     opened_at: str
     take_profit_price: Optional[float] = None
     hold_to_resolution: bool = True
+    # Whether this position was opened while DRY_RUN was true — i.e. no real
+    # order was ever placed on-chain. This is a property of when the position
+    # was OPENED, not of the current process's DRY_RUN setting, so redemption
+    # must never fall back to config.DRY_RUN here: a dry-run position left
+    # over from a mode switch must never trigger a real on-chain transaction.
+    is_dry_run: bool = True
 
 
 @dataclass

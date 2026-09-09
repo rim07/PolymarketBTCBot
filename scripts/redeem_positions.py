@@ -98,7 +98,10 @@ def sweep() -> None:
     payout_usdc = position.size_shares if won else 0.0
     pnl = payout_usdc - position.stake_usdc
 
-    if config.DRY_RUN:
+    if position.is_dry_run:
+        # Keyed off the position's own flag, not config.DRY_RUN — a dry-run
+        # position must simulate its close even if the process has since
+        # switched to live, since no real order was ever placed for it.
         journal.write_trade_row({
             "marketName": position.market_slug, "action": "DryRunRedeem",
             "usdcAmount": f"{payout_usdc:.6f}", "tokenAmount": f"{position.size_shares:.6f}",

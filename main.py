@@ -60,6 +60,7 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
             entry_price=approved.limit_price, stake_usdc=approved.stake_usdc, size_shares=approved.size_shares,
             opened_at=datetime.now(timezone.utc).isoformat(),
             take_profit_price=approved.take_profit_price, hold_to_resolution=approved.hold_to_resolution,
+            is_dry_run=True,
         ))
         return
 
@@ -87,6 +88,7 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
         entry_price=approved.limit_price, stake_usdc=approved.stake_usdc, size_shares=approved.size_shares,
         opened_at=datetime.now(timezone.utc).isoformat(),
         take_profit_price=approved.take_profit_price, hold_to_resolution=approved.hold_to_resolution,
+        is_dry_run=False,
     ))
 
 
@@ -152,6 +154,13 @@ def run_window() -> None:
         daily_state = state.ensure_current_day(state.load())
 
         if daily_state.open_position is not None:
+            position_age = datetime.now(timezone.utc) - datetime.fromisoformat(daily_state.open_position.opened_at)
+            if position_age.total_seconds() > 3 * config.WINDOW_SECONDS:
+                log.warning(
+                    "Position on %s has been open for %.0fs (>3 windows) — redemption sweep may be stuck; "
+                    "check logs/bot.log for redemption sweep errors.",
+                    daily_state.open_position.market_slug, position_age.total_seconds(),
+                )
             _monitor_take_profit(daily_state.open_position, market)
         else:
             cycle_id = str(uuid.uuid4())[:8]
