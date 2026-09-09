@@ -48,26 +48,29 @@ def get_client() -> ClobClient:
 
 
 def get_book_top(up_token_id: str, down_token_id: str) -> OrderBookTop:
+    """Note: unlike v1, get_order_books() returns raw dicts, not typed
+    OrderBookSummary objects — confirmed against the live API. Raw shape:
+    {"asset_id": ..., "bids": [{"price": "...", "size": "..."}], "asks": [...]}."""
     client = get_client()
     books = client.get_order_books(
         [BookParams(token_id=up_token_id), BookParams(token_id=down_token_id)]
     )
-    by_asset = {b.asset_id: b for b in books}
+    by_asset = {b["asset_id"]: b for b in books}
     up_book = by_asset[up_token_id]
     down_book = by_asset[down_token_id]
 
     def best(entries, pick_max: bool) -> tuple[float, float]:
         if not entries:
             return (0.0, 0.0)
-        best_entry = max(entries, key=lambda e: float(e.price)) if pick_max else min(
-            entries, key=lambda e: float(e.price)
+        best_entry = max(entries, key=lambda e: float(e["price"])) if pick_max else min(
+            entries, key=lambda e: float(e["price"])
         )
-        return float(best_entry.price), float(best_entry.size)
+        return float(best_entry["price"]), float(best_entry["size"])
 
-    up_bid, _ = best(up_book.bids, pick_max=True)
-    up_ask, up_ask_size = best(up_book.asks, pick_max=False)
-    down_bid, _ = best(down_book.bids, pick_max=True)
-    down_ask, down_ask_size = best(down_book.asks, pick_max=False)
+    up_bid, _ = best(up_book["bids"], pick_max=True)
+    up_ask, up_ask_size = best(up_book["asks"], pick_max=False)
+    down_bid, _ = best(down_book["bids"], pick_max=True)
+    down_ask, down_ask_size = best(down_book["asks"], pick_max=False)
 
     return OrderBookTop(
         up_bid=up_bid,
@@ -80,11 +83,15 @@ def get_book_top(up_token_id: str, down_token_id: str) -> OrderBookTop:
 
 
 def get_min_order_size(token_id: str) -> float:
+    """The raw /books response has no min_order_size field (confirmed live) —
+    this degrades to "no client-side minimum enforced" rather than crashing.
+    Not a risk gap: an order genuinely below Polymarket's real minimum is
+    still rejected by their API and caught as order_placement_failed."""
     client = get_client()
     books = client.get_order_books([BookParams(token_id=token_id)])
     if not books:
         return 0.0
-    min_size = getattr(books[0], "min_order_size", None)
+    min_size = books[0].get("min_order_size")
     return float(min_size) if min_size else 0.0
 
 
