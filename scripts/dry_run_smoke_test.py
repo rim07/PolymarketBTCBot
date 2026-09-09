@@ -43,17 +43,18 @@ def main() -> None:
             f"the collateral asset as pUSD, not USDC)"
         )
 
-    def check_gas_balance_informational():
-        # Redemption for a deposit-wallet account goes through the gasless relay
-        # (confirmed by reading polymarket-client's source), so this likely isn't
-        # required anymore — kept as an informational, non-blocking check rather
-        # than removed outright, since that's inferred from source, not yet
-        # confirmed by an actual live redemption.
-        from web3 import Web3
-        w3 = Web3(Web3.HTTPProvider(config.POLYGON_RPC_URL))
-        acct = w3.eth.account.from_key(config.PRIVATE_KEY)
-        bal = w3.eth.get_balance(acct.address) / 1e18
-        print(f"[INFO] Signer EOA gas balance: {bal:.4f} POL/MATIC at {acct.address} (likely not required for a deposit-wallet account, but harmless to have some)")
+    def check_relayer_key():
+        # Confirmed against a real account: order placement works without this,
+        # but redemption is a gasless relay transaction that fails without it
+        # ("Gasless transactions require a Builder API Key or Relayer API Key").
+        # Without this, a won/lost position never clears from local state,
+        # which blocks all future trades — not just a missed nice-to-have.
+        if not (config.RELAYER_API_KEY and config.RELAYER_API_KEY_ADDRESS):
+            raise RuntimeError(
+                "RELAYER_API_KEY / RELAYER_API_KEY_ADDRESS not set in .env — "
+                "redemption will fail and block all future trades once a position closes."
+            )
+        return f"configured for address {config.RELAYER_API_KEY_ADDRESS}"
 
     def check_market_discovery():
         from market_discovery import discover_market
@@ -67,10 +68,7 @@ def main() -> None:
 
     ok &= check("Anthropic API reachable", check_anthropic)
     ok &= check("CLOB collateral balance / deposit wallet", check_clob_balance)
-    try:
-        check_gas_balance_informational()
-    except Exception as e:
-        print(f"[INFO] Gas balance check skipped: {e}")
+    ok &= check("Relayer API key (needed for redemption)", check_relayer_key)
     ok &= check("Market discovery (current window)", check_market_discovery)
     ok &= check("Chainlink BTC/USD feed reachable", check_chainlink_feed)
 

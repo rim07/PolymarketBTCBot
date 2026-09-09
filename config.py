@@ -55,10 +55,16 @@ POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
 CHAINLINK_BTCUSD_FEED_ADDRESS = "0xc907E116054Ad103354f2D350FD2514433D57F6f"  # Polygon mainnet, 8 decimals
 
 # --- Wallet auth (from .env, never hardcoded) ---
-# Only the private key is needed: SecureClient.create(private_key=...) derives
-# the deposit wallet address and CLOB API credentials automatically, and
-# deploys the deposit wallet on first use if it isn't already deployed.
+# The private key alone is enough for order placement: SecureClient.create()
+# derives the deposit wallet address and CLOB API credentials automatically,
+# deploying the wallet on first use if needed. Redemption is a *gasless*
+# transaction for a deposit-wallet account, though, and that specifically
+# requires a Relayer (or Builder) API key — order placement works without it,
+# redemption doesn't ("Gasless transactions require a Builder API Key or
+# Relayer API Key", confirmed against a real account).
 PRIVATE_KEY = os.environ.get("PK", "")
+RELAYER_API_KEY = os.environ.get("RELAYER_API_KEY", "")
+RELAYER_API_KEY_ADDRESS = os.environ.get("RELAYER_API_KEY_ADDRESS", "")
 
 # --- Anthropic ---
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

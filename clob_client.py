@@ -16,6 +16,7 @@ your installed version in the smoke test before going live.
 """
 from dataclasses import dataclass
 
+from polymarket.auth import RelayerApiKey
 from polymarket.clients.secure import SecureClient
 
 import config
@@ -32,7 +33,11 @@ def get_client() -> SecureClient:
     if not config.PRIVATE_KEY:
         raise RuntimeError("PK is not set in .env — cannot initialize the CLOB client.")
 
-    _client = SecureClient.create(private_key=config.PRIVATE_KEY)
+    api_key = None
+    if config.RELAYER_API_KEY and config.RELAYER_API_KEY_ADDRESS:
+        api_key = RelayerApiKey(key=config.RELAYER_API_KEY, address=config.RELAYER_API_KEY_ADDRESS)
+
+    _client = SecureClient.create(private_key=config.PRIVATE_KEY, api_key=api_key)
     return _client
 
 
