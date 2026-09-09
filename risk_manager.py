@@ -1,0 +1,109 @@
+"""The only path from an LLM TradeDecision to a real order. Every check is
+re-evaluated fresh on every call — nothing here is cached or trusted from the
+LLM's own output. If you find yourself wanting to let a decision "just this
+once" skip one of these checks, don't — that's exactly the failure mode this
+module exists to prevent.
+
+Known limitation: MAX_CONCURRENT_POSITIONS is enforced as "at most the one
+position tracked in state.py's open_position field," which is only correct
+while MAX_CONCURRENT_POSITIONS == 1 (the approved value). If that's ever
+raised, this needs to track a list, not a single slot.
+"""
+from dataclasses import dataclass
+from typing import Optional
+
+import clob_client
+import config
+import journal
+import kill_switch
+import state
+from llm.schemas import TradeDecision
+from market_discovery import MarketInfo
+
+_EPSILON_SHARES = 1e-6
+
+
+@dataclass
+class ApprovedOrder:
+    token_id: str
+    side: str  # "UP" | "DOWN"
+    limit_price: float
+    stake_usdc: float
+    size_shares: float
+    take_profit_price: Optional[float]
+    hold_to_resolution: bool
+    market_slug: str
+
+
+def _reject(cycle_id: str, market_slug: str, reason: str, decision_json: str = "") -> None:
+    journal.write_risk_log_row(cycle_id, market_slug, approved=False, reason=reason, decision_json=decision_json)
+
+
+def evaluate(
+    decision: TradeDecision,
+    market: MarketInfo,
+    up_token_id: str,
+    down_token_id: str,
+    cycle_id: str,
+) -> Optional[ApprovedOrder]:
+    decision_json = decision.model_dump_json()
+
+    if kill_switch.is_engaged():
+        _reject(cycle_id, market.slug, "kill_switch_engaged", decision_json)
+        return None
+
+    daily_state = state.ensure_current_day(state.load())
+
+    if daily_state.realized_pnl_usdc <= -config.DAILY_LOSS_LIMIT_USDC:
+        _reject(cycle_id, market.slug, "daily_loss_limit_reached", decision_json)
+        return None
+
+    if daily_state.open_position is not None:
+        try:
+            still_open = clob_client.get_outcome_token_balance(daily_state.open_position.token_id) > _EPSILON_SHARES
+        except Exception:
+            # Fail toward caution: if we can't confirm it's closed, treat it as open.
+            still_open = True
+        if still_open:
+            _reject(cycle_id, market.slug, "position_already_open", decision_json)
+            return None
+        else:
+            daily_state = state.record_close(daily_state, realized_pnl_usdc=0.0)  # already accounted for at close time
+
+    if decision.action == "SKIP" or decision.stake_usdc <= 0:
+        _reject(cycle_id, market.slug, "skip_or_nonpositive_stake", decision_json)
+        return None
+
+    side = "UP" if decision.action == "BUY_UP" else "DOWN"
+    token_id = up_token_id if side == "UP" else down_token_id
+
+    price = decision.limit_price
+    if not (0.0 < price <= 0.99):
+        _reject(cycle_id, market.slug, "price_out_of_bounds", decision_json)
+        return None
+
+    stake = min(decision.stake_usdc, config.MAX_STAKE_PER_TRADE_USDC)
+    size_shares = stake / price
+
+    try:
+        min_order_size = clob_client.get_min_order_size(token_id)
+    except Exception:
+        _reject(cycle_id, market.slug, "min_order_size_lookup_failed", decision_json)
+        return None
+
+    if min_order_size and size_shares < min_order_size:
+        _reject(cycle_id, market.slug, "below_min_order_size", decision_json)
+        return None
+
+    journal.write_risk_log_row(cycle_id, market.slug, approved=True, reason="approved", decision_json=decision_json)
+
+    return ApprovedOrder(
+        token_id=token_id,
+        side=side,
+        limit_price=price,
+        stake_usdc=stake,
+        size_shares=size_shares,
+        take_profit_price=decision.take_profit_price,
+        hold_to_resolution=decision.hold_to_resolution,
+        market_slug=market.slug,
+    )

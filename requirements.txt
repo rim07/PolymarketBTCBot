@@ -1,0 +1,9 @@
+py-clob-client>=0.20
+web3>=6.15
+anthropic>=0.40
+pydantic>=2.7
+python-dotenv>=1.0
+tenacity>=8.2
+pytest>=8.0
+tzdata>=2024.1
+truststore>=0.10
