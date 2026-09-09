@@ -179,7 +179,7 @@ def run_window() -> None:
 
                 if decision is not None:
                     approved = risk_manager.evaluate(
-                        decision, market, market.up_token_id, market.down_token_id, cycle_id
+                        decision, market, market.up_token_id, market.down_token_id, cycle_id, edge_result
                     )
                     if approved is not None:
                         _execute_order(approved, market, sig, edge_result, cycle_id)

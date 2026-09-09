@@ -17,6 +17,7 @@ import config
 import journal
 import kill_switch
 import state
+from edge import EdgeOutput
 from llm.schemas import TradeDecision
 from market_discovery import MarketInfo
 
@@ -45,6 +46,7 @@ def evaluate(
     up_token_id: str,
     down_token_id: str,
     cycle_id: str,
+    edge_result: EdgeOutput,
 ) -> Optional[ApprovedOrder]:
     decision_json = decision.model_dump_json()
 
@@ -77,9 +79,22 @@ def evaluate(
     side = "UP" if decision.action == "BUY_UP" else "DOWN"
     token_id = up_token_id if side == "UP" else down_token_id
 
+    if side != edge_result.edge_side:
+        # The LLM proposed trading a side the deterministic edge-detector never
+        # flagged — there's no measured edge backing this, so it doesn't trade.
+        _reject(cycle_id, market.slug, "decision_side_mismatches_edge", decision_json)
+        return None
+
     price = decision.limit_price
     if not (0.0 < price <= 0.99):
         _reject(cycle_id, market.slug, "price_out_of_bounds", decision_json)
+        return None
+
+    max_allowed_price = edge_result.entry_price + config.MAX_PRICE_SLIPPAGE_BPS / 10_000
+    if price > max_allowed_price:
+        # Buying meaningfully above the ask that produced the edge would erode
+        # or erase it — reject rather than execute a price the model invented.
+        _reject(cycle_id, market.slug, "price_exceeds_observed_market_plus_slippage", decision_json)
         return None
 
     stake = min(decision.stake_usdc, config.MAX_STAKE_PER_TRADE_USDC)

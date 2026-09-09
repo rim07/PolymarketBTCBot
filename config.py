@@ -31,6 +31,7 @@ MAX_STAKE_PER_TRADE_USDC = 5.00
 DAILY_LOSS_LIMIT_USDC = 42.50  # 10% of starting bankroll
 MAX_CONCURRENT_POSITIONS = 1
 MIN_EDGE_BPS_TO_TRADE = 1500  # 15 cents on a $1 outcome; tune only via config.py, never at runtime
+MAX_PRICE_SLIPPAGE_BPS = 200  # limit_price may not exceed the observed entry_price by more than this
 DAY_BOUNDARY_TZ = ZoneInfo("America/New_York")
 
 # --- Timing ---

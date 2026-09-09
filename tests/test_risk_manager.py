@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import risk_manager
 import state
+from edge import EdgeOutput
 from llm.schemas import TradeDecision
 from market_discovery import MarketInfo
 
@@ -27,6 +28,15 @@ def _decision(**overrides) -> TradeDecision:
     return TradeDecision(**base)
 
 
+def _edge(**overrides) -> EdgeOutput:
+    base = dict(
+        has_edge=True, edge_side="UP", edge_bps=1500.0, market_implied_p_up=0.4,
+        entry_price=0.4, liquidity_ok=True, rationale="test",
+    )
+    base.update(overrides)
+    return EdgeOutput(**base)
+
+
 def _patch_common(monkeypatch, *, kill_engaged=False, daily_pnl=0.0, open_position=None):
     monkeypatch.setattr("kill_switch.is_engaged", lambda: kill_engaged)
     fake_state = state.DailyState(trading_day="2026-01-01", realized_pnl_usdc=daily_pnl, open_position=open_position)
@@ -37,14 +47,14 @@ def _patch_common(monkeypatch, *, kill_engaged=False, daily_pnl=0.0, open_positi
 
 def test_kill_switch_rejects(monkeypatch):
     _patch_common(monkeypatch, kill_engaged=True)
-    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc1")
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc1", _edge())
     assert result is None
 
 
 def test_daily_loss_limit_rejects(monkeypatch):
     import config
     _patch_common(monkeypatch, daily_pnl=-config.DAILY_LOSS_LIMIT_USDC)
-    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc2")
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc2", _edge())
     assert result is None
 
 
@@ -55,13 +65,13 @@ def test_open_position_rejects(monkeypatch):
     )
     _patch_common(monkeypatch, open_position=pos)
     monkeypatch.setattr("clob_client.get_outcome_token_balance", lambda token_id: 10.0)
-    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc3")
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc3", _edge())
     assert result is None
 
 
 def test_skip_action_rejects(monkeypatch):
     _patch_common(monkeypatch)
-    result = risk_manager.evaluate(_decision(action="SKIP", stake_usdc=0), _market(), "111", "222", "cyc4")
+    result = risk_manager.evaluate(_decision(action="SKIP", stake_usdc=0), _market(), "111", "222", "cyc4", _edge())
     assert result is None
 
 
@@ -69,7 +79,7 @@ def test_oversized_stake_is_clipped_not_rejected(monkeypatch):
     import config
     _patch_common(monkeypatch)
     monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
-    result = risk_manager.evaluate(_decision(stake_usdc=500.0), _market(), "111", "222", "cyc5")
+    result = risk_manager.evaluate(_decision(stake_usdc=500.0), _market(), "111", "222", "cyc5", _edge())
     assert result is not None
     assert result.stake_usdc == config.MAX_STAKE_PER_TRADE_USDC
 
@@ -78,21 +88,56 @@ def test_price_out_of_bounds_rejects(monkeypatch):
     # 1.0 passes the schema's le=1 bound but violates risk_manager's tighter
     # le=0.99 sanity check — this is what exercises risk_manager's own logic.
     _patch_common(monkeypatch)
-    result = risk_manager.evaluate(_decision(limit_price=1.0), _market(), "111", "222", "cyc6")
+    result = risk_manager.evaluate(
+        _decision(limit_price=1.0), _market(), "111", "222", "cyc6", _edge(entry_price=0.99)
+    )
     assert result is None
 
 
 def test_below_min_order_size_rejects(monkeypatch):
     _patch_common(monkeypatch)
     monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 1_000_000.0)
-    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc7")
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc7", _edge())
     assert result is None
 
 
 def test_valid_decision_is_approved(monkeypatch):
     _patch_common(monkeypatch)
     monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
-    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc8")
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc8", _edge())
     assert result is not None
     assert result.side == "UP"
     assert result.token_id == "111"
+
+
+def test_side_mismatched_with_edge_rejects(monkeypatch):
+    # Edge-detector only flagged UP; LLM proposing DOWN has no measured edge behind it.
+    _patch_common(monkeypatch)
+    result = risk_manager.evaluate(
+        _decision(action="BUY_DOWN", limit_price=0.4), _market(), "111", "222", "cyc9",
+        _edge(edge_side="UP"),
+    )
+    assert result is None
+
+
+def test_price_far_above_observed_market_rejects(monkeypatch):
+    import config
+    # Edge was found with the ask at 0.35; proposing to pay 0.80 would erase it.
+    _patch_common(monkeypatch)
+    result = risk_manager.evaluate(
+        _decision(limit_price=0.80), _market(), "111", "222", "cyc10",
+        _edge(entry_price=0.35),
+    )
+    assert result is None
+
+
+def test_price_within_slippage_buffer_is_approved(monkeypatch):
+    import config
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    buffer = config.MAX_PRICE_SLIPPAGE_BPS / 10_000
+    result = risk_manager.evaluate(
+        _decision(limit_price=0.35 + buffer / 2), _market(), "111", "222", "cyc11",
+        _edge(entry_price=0.35),
+    )
+    assert result is not None
