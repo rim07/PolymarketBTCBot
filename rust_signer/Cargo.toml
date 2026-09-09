@@ -1,0 +1,13 @@
+[package]
+name = "rust_signer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+polymarket_client_sdk_v2 = { version = "0.7", features = ["clob"] }
+alloy = { version = "1.6", features = ["signer-local"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }

@@ -35,16 +35,25 @@ def main() -> None:
 
     def check_clob_balance():
         import clob_client
-        return f"${clob_client.get_collateral_balance_usdc():.2f} collateral (confirm this is what you expect — Polymarket docs currently list the collateral asset as pUSD, not USDC)"
+        address = clob_client.get_deposit_wallet_address()
+        balance = clob_client.get_collateral_balance_usdc()
+        return (
+            f"${balance:.2f} collateral at deposit wallet {address} "
+            f"(confirm this matches what you deposited — Polymarket docs currently list "
+            f"the collateral asset as pUSD, not USDC)"
+        )
 
-    def check_gas_balance():
+    def check_gas_balance_informational():
+        # Redemption for a deposit-wallet account goes through the gasless relay
+        # (confirmed by reading polymarket-client's source), so this likely isn't
+        # required anymore — kept as an informational, non-blocking check rather
+        # than removed outright, since that's inferred from source, not yet
+        # confirmed by an actual live redemption.
         from web3 import Web3
         w3 = Web3(Web3.HTTPProvider(config.POLYGON_RPC_URL))
         acct = w3.eth.account.from_key(config.PRIVATE_KEY)
         bal = w3.eth.get_balance(acct.address) / 1e18
-        if bal <= 0:
-            raise RuntimeError(f"{acct.address} has 0 POL/MATIC — redemption transactions will fail without gas")
-        return f"{bal:.4f} POL/MATIC at {acct.address}"
+        print(f"[INFO] Signer EOA gas balance: {bal:.4f} POL/MATIC at {acct.address} (likely not required for a deposit-wallet account, but harmless to have some)")
 
     def check_market_discovery():
         from market_discovery import discover_market
@@ -57,8 +66,11 @@ def main() -> None:
         return f"${price:,.2f} (updated_at={updated_at})"
 
     ok &= check("Anthropic API reachable", check_anthropic)
-    ok &= check("CLOB collateral balance", check_clob_balance)
-    ok &= check("Polygon gas balance", check_gas_balance)
+    ok &= check("CLOB collateral balance / deposit wallet", check_clob_balance)
+    try:
+        check_gas_balance_informational()
+    except Exception as e:
+        print(f"[INFO] Gas balance check skipped: {e}")
     ok &= check("Market discovery (current window)", check_market_discovery)
     ok &= check("Chainlink BTC/USD feed reachable", check_chainlink_feed)
 

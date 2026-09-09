@@ -44,23 +44,21 @@ LLM_CALL_TIMEOUT_SECONDS = 12
 
 # --- Market discovery (Polymarket "Bitcoin Up or Down" 5-min series) ---
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
-CLOB_API_BASE = "https://clob.polymarket.com"
 MARKET_SLUG_PREFIX = "btc-updown-5m-"  # + window-start epoch seconds (UTC)
 
-# --- Chain / contracts (Polygon mainnet, chain_id 137) ---
+# --- Chain (Polygon mainnet, chain_id 137) ---
+# Only used for the Chainlink cross-check read in price_feed.py — order
+# placement/redemption go through polymarket-client's SecureClient, which
+# manages its own RPC/relayer internally and needs none of this.
 CHAIN_ID = 137
 POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
-CTF_CONTRACT_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-COLLATERAL_TOKEN_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # pUSD per Polymarket docs (2026) — confirm vs. your wallet's asset during smoke test
 CHAINLINK_BTCUSD_FEED_ADDRESS = "0xc907E116054Ad103354f2D350FD2514433D57F6f"  # Polygon mainnet, 8 decimals
 
-# --- Wallet / CLOB auth (from .env, never hardcoded) ---
+# --- Wallet auth (from .env, never hardcoded) ---
+# Only the private key is needed: SecureClient.create(private_key=...) derives
+# the deposit wallet address and CLOB API credentials automatically, and
+# deploys the deposit wallet on first use if it isn't already deployed.
 PRIVATE_KEY = os.environ.get("PK", "")
-SIGNATURE_TYPE = int(os.environ.get("SIGNATURE_TYPE", "1"))
-FUNDER_ADDRESS = os.environ.get("FUNDER", "")
-CLOB_API_KEY = os.environ.get("CLOB_API_KEY", "")
-CLOB_API_SECRET = os.environ.get("CLOB_API_SECRET", "")
-CLOB_API_PASSPHRASE = os.environ.get("CLOB_API_PASSPHRASE", "")
 
 # --- Anthropic ---
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
