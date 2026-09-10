@@ -86,7 +86,11 @@ def evaluate(
         _reject(cycle_id, market.slug, "decision_side_mismatches_edge", decision_json)
         return None
 
-    price = decision.limit_price
+    # Round to the standard 0.01 tick size — confirmed live that an unrounded
+    # price (e.g. an LLM-proposed 0.234) gets rejected with "price must
+    # conform to tick size 0.01", failing safely (no order placed) but
+    # wasting a real candidate trade.
+    price = round(decision.limit_price, 2)
     if not (0.0 < price <= 0.99):
         _reject(cycle_id, market.slug, "price_out_of_bounds", decision_json)
         return None

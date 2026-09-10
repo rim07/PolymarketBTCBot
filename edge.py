@@ -43,13 +43,21 @@ def _depth_covers_stake(ask_size_shares: float, ask_price: float) -> bool:
 def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
     market_implied_p_up = (book.up_bid + book.up_ask) / 2.0
 
-    edge_up_bps = (signal.p_up - book.up_ask) * 10_000
-    edge_down_bps = ((1 - signal.p_up) - book.down_ask) * 10_000
-
-    if edge_up_bps >= edge_down_bps:
-        side, edge_bps, ask, ask_size = "UP", edge_up_bps, book.up_ask, book.up_ask_size
+    # Only ever evaluate the side the model's own p_up actually favors — never
+    # the opposite side just because it's priced cheap. Confirmed against a
+    # real trading day (2026-09-10): buying the model's own underdog side
+    # because the market discounted it heavily went 0-for-9. Letting this
+    # function pick "whichever side has more edge" regardless of which side
+    # p_up favors is exactly what produced that pattern, and interacts badly
+    # with PROBABILITY_SHRINKAGE_K -- shrinking p_up toward 0.5 inflates the
+    # *opposite* side's implied probability, manufacturing fake edge on the
+    # side the model itself considers less likely.
+    if signal.p_up >= 0.5:
+        side, edge_bps, ask, ask_size = "UP", (signal.p_up - book.up_ask) * 10_000, book.up_ask, book.up_ask_size
     else:
-        side, edge_bps, ask, ask_size = "DOWN", edge_down_bps, book.down_ask, book.down_ask_size
+        side, edge_bps, ask, ask_size = (
+            "DOWN", ((1 - signal.p_up) - book.down_ask) * 10_000, book.down_ask, book.down_ask_size,
+        )
 
     liquidity_ok = _depth_covers_stake(ask_size, ask)
     has_edge = (
