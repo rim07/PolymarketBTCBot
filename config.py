@@ -27,11 +27,21 @@ LOG_DIR.mkdir(exist_ok=True)
 
 # --- Bankroll / risk limits (hard caps, enforced in risk_manager.py) ---
 STARTING_BANKROLL_USDC = 425.00
-MAX_STAKE_PER_TRADE_USDC = 5.00
+MAX_STAKE_PER_TRADE_USDC = 3.00  # was 5.00 -- per 2026-09-10 review: realized 55.6% win rate is
+                                  # below the ~57-59% payout-implied breakeven; Kelly is ~zero
+                                  # to slightly negative until calibration is re-verified on
+                                  # more trades, so size for survival, not growth
 DAILY_LOSS_LIMIT_USDC = 42.50  # 10% of starting bankroll
 MAX_CONCURRENT_POSITIONS = 1
-MIN_EDGE_BPS_TO_TRADE = 1500  # 15 cents on a $1 outcome; tune only via config.py, never at runtime
+MIN_EDGE_BPS_TO_TRADE = 2400  # was 1500 -- sampled 1500-1900bps entries went 2/8, >=1900bps went 4/7;
+                               # tune only via config.py, never at runtime
 MAX_PRICE_SLIPPAGE_BPS = 200  # limit_price may not exceed the observed entry_price by more than this
+PROBABILITY_SHRINKAGE_K = 0.40  # applied in quant_signal.py: p_used = 0.5 + K*(p_raw - 0.5).
+                                  # Added per 2026-09-10 review: the quant signal is badly
+                                  # overconfident (stated p averaged 0.731 on entries bought
+                                  # against a realized 55.6%, an implied K of ~0.24) -- 0.40 is
+                                  # a conservative middle setting pending a proper fit on more
+                                  # closed trades with logged entry prices.
 DAY_BOUNDARY_TZ = ZoneInfo("America/New_York")
 
 # --- Timing ---

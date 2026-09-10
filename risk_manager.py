@@ -21,8 +21,6 @@ from edge import EdgeOutput
 from llm.schemas import TradeDecision
 from market_discovery import MarketInfo
 
-_EPSILON_SHARES = 1e-6
-
 
 @dataclass
 class ApprovedOrder:
@@ -61,16 +59,19 @@ def evaluate(
         return None
 
     if daily_state.open_position is not None:
-        try:
-            still_open = clob_client.get_outcome_token_balance(daily_state.open_position.token_id) > _EPSILON_SHARES
-        except Exception:
-            # Fail toward caution: if we can't confirm it's closed, treat it as open.
-            still_open = True
-        if still_open:
-            _reject(cycle_id, market.slug, "position_already_open", decision_json)
-            return None
-        else:
-            daily_state = state.record_close(daily_state, realized_pnl_usdc=0.0)  # already accounted for at close time
+        # Unconditional reject — no self-clearing here. This used to check
+        # get_outcome_token_balance() and clear the position (with a fabricated
+        # realized_pnl_usdc=0.0) if the balance read came back at/near zero.
+        # That balance read can be transiently zero (a fill that hasn't settled,
+        # an API hiccup) even while the position is genuinely open, which let a
+        # second buy through on the same market — the exact "$3 + $5 on one
+        # window" incident the daily performance review caught — and silently
+        # understated real losses in the daily-loss-limit tracker whenever it
+        # misfired. Clearing state is exclusively redeem_positions.sweep()'s
+        # job now (Gamma resolution status, not a balance snapshot, and it
+        # records the real computed pnl, never a fabricated one).
+        _reject(cycle_id, market.slug, "position_already_open", decision_json)
+        return None
 
     if decision.action == "SKIP" or decision.stake_usdc <= 0:
         _reject(cycle_id, market.slug, "skip_or_nonpositive_stake", decision_json)

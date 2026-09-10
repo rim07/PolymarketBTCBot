@@ -41,7 +41,17 @@ def _handle_shutdown(signum, _frame) -> None:
     _shutdown_requested = True
 
 
+def _strategy_tag(sig, approved) -> str:
+    """Per the 2026-09-10 review: entries where the model's own probability on
+    the side actually bought is below 50% are underdog value bets on price
+    alone, not directional convictions -- they have a different breakeven
+    hit rate and must be tracked separately from directional entries."""
+    p_side = sig.p_up if approved.side == "UP" else 1 - sig.p_up
+    return "price_arb" if p_side < 0.5 else "directional"
+
+
 def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
+    tag = _strategy_tag(sig, approved)
     if config.DRY_RUN:
         log.info(
             "[%s] DRY_RUN: would BUY %s %.2f shares @ %.3f ($%.2f) on %s",
@@ -52,7 +62,7 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
             "usdcAmount": f"{approved.stake_usdc:.6f}", "tokenAmount": f"{approved.size_shares:.6f}",
             "tokenName": approved.side, "cycle_id": cycle_id,
             "model_p_up": f"{sig.p_up:.4f}", "edge_bps": f"{edge_result.edge_bps:.0f}",
-            "decision_rationale": "dry_run", "agent_model_ids": config.HEAD_TRADER_MODEL,
+            "decision_rationale": f"dry_run tag={tag}", "agent_model_ids": config.HEAD_TRADER_MODEL,
         })
         daily_state = state.ensure_current_day(state.load())
         state.record_open(daily_state, state.OpenPosition(
@@ -80,7 +90,7 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
         "usdcAmount": f"{approved.stake_usdc:.6f}", "tokenAmount": f"{approved.size_shares:.6f}",
         "tokenName": approved.side, "hash": placed.order_id, "cycle_id": cycle_id,
         "model_p_up": f"{sig.p_up:.4f}", "edge_bps": f"{edge_result.edge_bps:.0f}",
-        "decision_rationale": "approved", "agent_model_ids": config.HEAD_TRADER_MODEL,
+        "decision_rationale": f"approved tag={tag}", "agent_model_ids": config.HEAD_TRADER_MODEL,
     })
     daily_state = state.ensure_current_day(state.load())
     state.record_open(daily_state, state.OpenPosition(

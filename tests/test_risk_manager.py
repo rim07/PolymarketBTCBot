@@ -64,9 +64,27 @@ def test_open_position_rejects(monkeypatch):
         stake_usdc=5.0, size_shares=10.0, opened_at="now",
     )
     _patch_common(monkeypatch, open_position=pos)
-    monkeypatch.setattr("clob_client.get_outcome_token_balance", lambda token_id: 10.0)
     result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc3", _edge())
     assert result is None
+
+
+def test_open_position_rejects_unconditionally_even_if_balance_reads_zero(monkeypatch):
+    # Regression test: risk_manager used to call get_outcome_token_balance()
+    # and self-clear the position (with a fabricated pnl=0.0) if the balance
+    # read came back at/near zero -- which can happen transiently even for a
+    # genuinely open position, and let a second buy through on the same
+    # market. It must now reject unconditionally and never touch state itself.
+    pos = state.OpenPosition(
+        token_id="111", side="UP", market_slug="other", entry_price=0.5,
+        stake_usdc=5.0, size_shares=10.0, opened_at="now",
+    )
+    _patch_common(monkeypatch, open_position=pos)
+    monkeypatch.setattr("clob_client.get_outcome_token_balance", lambda token_id: 0.0)
+    recorded_closes = []
+    monkeypatch.setattr("state.record_close", lambda s, realized_pnl_usdc: recorded_closes.append(realized_pnl_usdc))
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc3b", _edge())
+    assert result is None
+    assert recorded_closes == []
 
 
 def test_skip_action_rejects(monkeypatch):

@@ -25,7 +25,7 @@ class ParamSuggestion(BaseModel):
 class PerformanceReview(BaseModel):
     period: str
     summary: str
-    win_rate: float
+    win_rate: float = Field(ge=0, le=1, description="Fraction between 0 and 1, e.g. 0.556 for 55.6% — not a 0-100 percentage")
     total_pnl_usdc: float
     calibration_notes: str
     suggested_changes: List[ParamSuggestion] = Field(default_factory=list)

@@ -16,6 +16,7 @@ calibration notes against realized outcomes, not by guessing.
 import math
 from dataclasses import dataclass
 
+import config
 from price_feed import RollingPriceTracker
 
 _EPSILON_BPS = 1e-6
@@ -60,7 +61,13 @@ def estimate_p_up(
     vol_per_sqrt_second = move_bps_per_tick / math.sqrt(max(avg_dt, 1e-6))
     remaining_stdev_bps = vol_per_sqrt_second * math.sqrt(max(remaining_seconds, 0.0))
 
-    p_up = _norm_cdf(current_deviation_bps / max(remaining_stdev_bps, _EPSILON_BPS))
+    p_up_raw = _norm_cdf(current_deviation_bps / max(remaining_stdev_bps, _EPSILON_BPS))
+    # Shrink toward 0.5: per the 2026-09-10 performance review, this model is
+    # badly overconfident (stated p averaged 0.731 on entries actually bought,
+    # against a realized 55.6% win rate -- an implied shrinkage factor of only
+    # ~0.24). Recalibrate PROBABILITY_SHRINKAGE_K itself once more closed
+    # trades with logged entry prices are available; don't hand-wave it either.
+    p_up = 0.5 + config.PROBABILITY_SHRINKAGE_K * (p_up_raw - 0.5)
 
     # Fixed, tunable thresholds for classifying the current vol regime — recalibrate
     # against realized data, do not hand-wave these.
@@ -76,7 +83,8 @@ def estimate_p_up(
     rationale = (
         f"deviation={current_deviation_bps:+.1f}bps since open, "
         f"remaining_stdev~={remaining_stdev_bps:.1f}bps over {remaining_seconds:.0f}s left, "
-        f"{n} samples, vol_regime={regime}"
+        f"{n} samples, vol_regime={regime}, "
+        f"p_up_raw={p_up_raw:.3f} shrunk_by_K={config.PROBABILITY_SHRINKAGE_K}"
     )
 
     return SignalOutput(

@@ -36,7 +36,7 @@ def _load_rows(since_epoch: float) -> list[dict]:
 _PNL_RE = re.compile(r"pnl=(-?\d+\.?\d*)")
 
 
-def _summarize(rows: list[dict]) -> tuple[str, str]:
+def _summarize(rows: list[dict]) -> tuple[str, str, float, float]:
     outcomes = [r for r in rows if r["action"] in ("Redeem", "DryRunRedeem", "Sell")]
     pnls = []
     for r in outcomes:
@@ -61,7 +61,7 @@ def _summarize(rows: list[dict]) -> tuple[str, str]:
         f"edge_bps={r.get('edge_bps','')} note={r.get('decision_rationale','')}"
         for r in rows[-30:]
     )
-    return stats, sample or "(no trades in this period)"
+    return stats, sample or "(no trades in this period)", win_rate, total_pnl
 
 
 def main() -> None:
@@ -71,13 +71,19 @@ def main() -> None:
 
     since_epoch = time.time() - args.days * 86400
     rows = _load_rows(since_epoch)
-    stats, sample = _summarize(rows)
+    stats, sample, win_rate, total_pnl = _summarize(rows)
 
     result = review(period_label=f"last {args.days} day(s)", stats_summary=stats, sample_rows_text=sample)
 
     print(f"\n=== Performance Review: {result.period} ===")
     print(result.summary)
-    print(f"\nwin_rate={result.win_rate:.1%}  total_pnl_usdc={result.total_pnl_usdc:+.2f}")
+    # Printed from our own deterministic computation, not result.win_rate/
+    # result.total_pnl_usdc -- those are the LLM's own restated figures, and
+    # its win_rate came back as a 0-100 percentage at least once, which made
+    # ":.1%" formatting multiply by 100 again ("5560.0%"). Ground truth from
+    # the CSV directly is strictly more reliable here regardless of what
+    # scale the model happens to answer in.
+    print(f"\nwin_rate={win_rate:.1%}  total_pnl_usdc={total_pnl:+.2f}")
     print(f"\nCalibration notes:\n{result.calibration_notes}")
     if result.suggested_changes:
         print("\nSuggested changes (apply to config.py by hand if you agree — not automatic):")
