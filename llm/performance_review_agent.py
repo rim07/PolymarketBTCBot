@@ -28,6 +28,11 @@ def review(period_label: str, stats_summary: str, sample_rows_text: str) -> Perf
         user_content=user_content,
         output_format=PerformanceReview,
         effort="high",
-        max_tokens=4096,
-        timeout_seconds=60,
+        # 4096 was too tight: Opus-tier models think by default even without
+        # an explicit thinking param, and effort="high" thinking can consume
+        # the whole budget before any text block starts, leaving
+        # response.parsed_output silently None. 16000 is the SDK's own
+        # recommended non-streaming default.
+        max_tokens=16000,
+        timeout_seconds=120,
     )
