@@ -202,6 +202,22 @@ def test_price_within_slippage_buffer_is_approved(monkeypatch):
     assert result is not None
 
 
+def test_price_below_the_profile_floor_rejects(monkeypatch):
+    """limit_price was bounded only from above (entry_price + slippage), so the
+    LLM could lowball its way into the deep-underdog range even after edge.py
+    started flooring the ask. Both bounds are needed: this is the module every
+    order has to pass through."""
+    import config
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    below = round(config.MIN_ENTRY_PRICE - 0.05, 2)
+    result = risk_manager.evaluate(
+        _decision(limit_price=below), _market(), "111", "222", "cycp1",
+        _edge(entry_price=below),
+    )
+    assert result is None
+
+
 def test_stake_is_capped_at_visible_depth(monkeypatch):
     """Sizing past the top of book means the remainder either rests unfilled or
     walks up to prices the edge was never computed against. 5 shares at 0.40 is

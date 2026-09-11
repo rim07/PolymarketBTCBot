@@ -127,6 +127,18 @@ def evaluate(
         _reject(cycle_id, market.slug, "price_exceeds_observed_market_plus_slippage", decision_json)
         return None
 
+    if price < config.MIN_ENTRY_PRICE:
+        # edge.py already floors the *ask* at MIN_ENTRY_PRICE, but limit_price is
+        # the LLM's own number and was previously bounded only from above — so a
+        # lowball limit could still buy into the deep-underdog range the floor
+        # exists to keep the desk out of. Enforced here as well because this is
+        # the module orders actually have to pass through.
+        _reject(
+            cycle_id, market.slug,
+            f"price_below_profile_floor: {price:.2f} < {config.MIN_ENTRY_PRICE:.2f}", decision_json,
+        )
+        return None
+
     # Bankroll is read before sizing because Kelly is a fraction *of* it, and
     # because the same number answers "can we pay for this?" further down. Free
     # collateral understates the true bankroll by whatever is tied up in an open

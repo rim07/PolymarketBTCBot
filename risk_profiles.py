@@ -36,6 +36,18 @@ Two design rules worth keeping if you add or tune a profile:
    because risk_manager.py enforces it with a single position slot and raises at
    import if the value isn't 1. Holding several windows at once is a real
    aggression lever, but it needs that check rewritten to track a list first.
+3. **`min_edge_bps_to_trade` and `probability_shrinkage_k` are not independent,
+   and together they decide what *prices* the desk can trade.** Shrinkage caps
+   p_side at `0.5 + K/2`, and edge.py requires `p_side - ask >= min_edge`, so the
+   highest price the desk can ever pay is `0.5 + K/2 - min_edge`
+   (`max_reachable_entry_price`). This has already gone wrong once: at K=0.40 and
+   2400bps the standard profile could not buy anything above **0.46** whatever
+   the model believed, and a flat signal capped it at 0.26 — so a threshold
+   raised for safety silently converted the desk into a deep-underdog buyer,
+   which is the losing pattern edge.py's side-selection guard was added to stop.
+   Raising `min_edge_bps_to_trade` is therefore *not* a purely conservative
+   change. Check `max_reachable_entry_price` after touching either number;
+   test_risk_profiles.py asserts it stays at or above 0.50 for every profile.
 """
 from dataclasses import dataclass
 
@@ -60,6 +72,21 @@ class RiskProfile:
     # --- entry selectivity ---
     min_edge_bps_to_trade: int
     probability_shrinkage_k: float
+    # Conviction floor: the model's own (already shrunk) probability for the side
+    # being bought. Independent of price, and that independence is the point.
+    # min_edge_bps_to_trade alone tests `p_side - ask`, which a cheap enough ask
+    # satisfies no matter how little the model knows — a p_side of 0.504 clears a
+    # 2400bps threshold against any ask at or below 0.26. So the desk would buy
+    # near-worthless contracts on a coin-flip signal and call it a 3000bps edge.
+    # This gate says: don't trade at all without an actual directional view.
+    min_model_p_side: float
+    # Hard floor on the entry price, as a backstop below the two gates above.
+    # Late in a 5-minute window the market's price is set by participants reading
+    # the real Chainlink settlement stream, while this desk reconstructs it from
+    # Binance spot — so a contract the market has marked at 0.05 is one we are in
+    # no position to contradict. A big `p_side - ask` number there is a statement
+    # about our model, not about free money.
+    min_entry_price: float
     # Top-of-book notional an entry must have available before edge.py will call
     # it tradeable. A floor, not the intended stake — risk_manager separately
     # caps the stake at the depth actually showing, so a thin book shrinks the
@@ -95,6 +122,28 @@ class RiskProfile:
             return 0.0
         return self.daily_loss_limit_usdc / self.max_stake_per_trade_usdc
 
+    @property
+    def shrunk_probability_ceiling(self) -> float:
+        """The most confident p_side this profile's shrinkage can ever emit.
+
+        quant_signal applies p = 0.5 + K*(p_raw - 0.5), so even a raw probability
+        of 1.0 comes out at 0.5 + K/2. Every entry gate below is measured against
+        this ceiling, not against 1.0.
+        """
+        return 0.5 + self.probability_shrinkage_k / 2.0
+
+    @property
+    def max_reachable_entry_price(self) -> float:
+        """The highest price this profile can ever pay, given its own numbers.
+
+        edge.py requires `p_side - ask >= min_edge`, and p_side can't exceed the
+        shrinkage ceiling, so the threshold silently caps the entry price too.
+        This is the coupling that broke the desk once already (see design rule 3)
+        and it is easy to reintroduce, because the two parameters look
+        independent and live on different lines.
+        """
+        return self.shrunk_probability_ceiling - self.min_edge_bps_to_trade / 10_000
+
 
 STANDARD = RiskProfile(
     name="standard",
@@ -105,12 +154,27 @@ STANDARD = RiskProfile(
     daily_loss_limit_usdc=42.50,      # 10% of the $425 starting bankroll
     max_price_slippage_bps=200,
     min_stake_usdc=1.00,
-    # Sampled 1500-1900bps entries went 2/8, >=1900bps went 4/7.
-    min_edge_bps_to_trade=2400,
+    # Was 2400, which combined with K=0.40 to cap the entry price at 0.46 and
+    # confine the desk to deep underdogs (design rule 3 above). 800bps is a
+    # post-shrinkage margin: shrinkage has *already* discounted the model's
+    # overconfidence, and demanding another 24 points on top of it double-counted
+    # the same correction until the only trades left were the ones the market had
+    # written off. 8 points of edge on a shrunk probability, plus a conviction
+    # floor and a price floor, is the selectivity — not a single large number.
+    min_edge_bps_to_trade=800,
     # The quant signal is badly overconfident (stated p averaged 0.731 on entries
     # bought against a realized 55.6%, an implied K of ~0.24). 0.40 is a
     # conservative middle setting pending a proper fit on more closed trades.
     probability_shrinkage_k=0.40,
+    # Requires a raw p_up of >= 0.70 before shrinkage. Comfortably inside what
+    # the signal produces (it averaged 0.731 raw on entries), so this filters the
+    # no-information ticks rather than the trades.
+    min_model_p_side=0.58,
+    # 0.25 caps the payout at 4x. Every entry below this on the reviewed day was
+    # a loss, and the mechanism is not bad luck: a 5-minute window priced under
+    # 0.25 is usually one the settlement TWAP has largely decided, and our proxy
+    # of that TWAP is the weaker read of the two.
+    min_entry_price=0.25,
     min_liquidity_usdc=3.00,          # == max stake: preserves the original all-or-nothing depth gate
     kelly_enabled=False,              # flat sizing at the cap, as originally approved
     kelly_multiplier=0.0,
@@ -139,17 +203,25 @@ AGGRESSIVE = RiskProfile(
     # drawn-down bankroll, and when it does, not trading is the correct answer —
     # the position slot is worth more than a $0.40 punt.
     min_stake_usdc=1.00,
-    # Half the standard threshold. This is the single biggest driver of trade
-    # count, and therefore of how fast a real edge compounds — or a negative one
-    # bleeds. The 2026-09-10 sample says 1200-1900bps entries are the weakest
-    # bucket measured, which is precisely why they get Kelly-sized down here
-    # rather than sized flat.
-    min_edge_bps_to_trade=1200,
+    # Below standard's 800. This is the single biggest driver of trade count, and
+    # therefore of how fast a real edge compounds — or a negative one bleeds.
+    # Thin edges get Kelly-sized down here rather than skipped, which is what
+    # makes a low threshold tolerable in this profile and not in standard.
+    min_edge_bps_to_trade=500,
     # Trust the model further out from 0.5. Note this compounds with the lower
     # edge threshold: less shrinkage widens every |p - 0.5|, which inflates
     # edge_bps as well, so the two together are a large loosening rather than two
     # small ones.
     probability_shrinkage_k=0.65,
+    # Looser than standard's 0.58 — a raw p_up of ~0.58 rather than 0.70. Still a
+    # real directional view: this profile is meant to take marginal *edges*, not
+    # to trade on no information at all, and no amount of Kelly damping rescues a
+    # position entered on a coin flip.
+    min_model_p_side=0.55,
+    # Lower than standard, so this profile can buy the genuine 4-6x longshots
+    # standard declines. Not zero: below ~0.15 the market is reading the real
+    # settlement stream and we are reading a proxy of it.
+    min_entry_price=0.15,
     # Lower than standard so a thin top-of-book shrinks the trade instead of
     # cancelling it — at 12.00 the standard "depth must cover the full stake"
     # gate would silently refuse almost every window in this market.

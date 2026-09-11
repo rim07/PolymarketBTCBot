@@ -88,6 +88,65 @@ def test_aggressive_is_actually_more_aggressive_on_every_axis():
     assert AGGRESSIVE.min_edge_bps_to_trade < STANDARD.min_edge_bps_to_trade
     assert AGGRESSIVE.probability_shrinkage_k > STANDARD.probability_shrinkage_k
     assert AGGRESSIVE.max_price_slippage_bps > STANDARD.max_price_slippage_bps
+    assert AGGRESSIVE.min_model_p_side < STANDARD.min_model_p_side
+    assert AGGRESSIVE.min_entry_price < STANDARD.min_entry_price
+
+
+def test_no_profile_is_confined_to_buying_underdogs():
+    """Design rule 3, and the regression on a bug that cost real money.
+
+    `min_edge_bps_to_trade` and `probability_shrinkage_k` look independent but
+    multiply into a cap on the *entry price*: shrinkage caps p_side at 0.5 + K/2,
+    edge.py needs `p_side - ask >= min_edge`, so nothing above
+    `0.5 + K/2 - min_edge` is purchasable at any conviction. At K=0.40 and
+    2400bps that ceiling was 0.46, so the standard profile could only ever buy
+    contracts the market thought were losing — the exact pattern edge.py's
+    side-selection guard exists to prevent, arriving through the price instead.
+
+    Raising the edge threshold is the natural "let's be safer" edit, and it is
+    what broke this. Anything that pushes a profile's reachable price back below
+    0.50 has reintroduced the bug.
+    """
+    for profile in risk_profiles.PROFILES.values():
+        assert profile.max_reachable_entry_price >= 0.50, (
+            f"{profile.name}: min_edge={profile.min_edge_bps_to_trade}bps against a p_side "
+            f"ceiling of {profile.shrunk_probability_ceiling:.2f} caps entries at "
+            f"{profile.max_reachable_entry_price:.2f} — the desk can only buy underdogs"
+        )
+
+
+def test_every_profile_leaves_itself_a_tradeable_price_band():
+    """The floor has to sit below the ceiling, or the profile finds edges and
+    trades none of them — the silent-veto failure mode, which looks like a
+    working desk that never fills."""
+    for profile in risk_profiles.PROFILES.values():
+        assert profile.min_entry_price < profile.max_reachable_entry_price, profile.name
+
+
+def test_every_profile_requires_an_actual_directional_view():
+    """A conviction floor at or below 0.5 is not a floor: p_side is >= 0.5 by
+    construction (edge.py always evaluates the side p_up favours), so the gate
+    would pass on every coin flip and the cheap-price loophole would be open
+    again. It also has to be *reachable* — above the shrinkage ceiling and the
+    profile never trades at all."""
+    for profile in risk_profiles.PROFILES.values():
+        assert profile.min_model_p_side > 0.5, profile.name
+        assert profile.min_model_p_side < profile.shrunk_probability_ceiling, profile.name
+
+
+def test_the_conviction_floor_and_the_price_floor_are_not_redundant():
+    """Each catches cases the other doesn't, which is why both exist rather than
+    one tuned harder. Standard's numbers: a coin flip at a normal price passes
+    the price floor, and a strong view at 0.05 passes the conviction floor."""
+    edge = STANDARD.min_edge_bps_to_trade / 10_000
+    coin_flip_at_a_normal_price = (0.504, 0.504 - edge)   # ask ~0.42: price fine, conviction isn't
+    strong_view_on_a_dead_contract = (0.69, 0.05)          # conviction fine, price isn't
+
+    p_side, ask = coin_flip_at_a_normal_price
+    assert ask >= STANDARD.min_entry_price and p_side < STANDARD.min_model_p_side
+
+    p_side, ask = strong_view_on_a_dead_contract
+    assert p_side >= STANDARD.min_model_p_side and ask < STANDARD.min_entry_price
 
 
 def test_every_profile_floors_the_stake_above_dust():

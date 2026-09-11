@@ -27,6 +27,10 @@ settles it, not the price at the end. Two implications for your judgment:
 Hard constraints you must respect (a separate risk-management layer will also enforce these,
 but reason as if they are absolute):
 - Never propose a stake above ${max_stake:.2f}.
+- Never propose a limit_price below {min_entry_price:.2f}. Cheaper contracts are rejected outright:
+  a 5-minute window priced that low is one the settlement TWAP has largely decided, and this desk
+  reads that TWAP through a proxy feed rather than the stream the market settles on. A large
+  edge_bps at a very low price is evidence the model is wrong, not that the payout is free.
 - If a position is already open, or the kill switch is engaged, or today's realized loss is at
   or past the daily loss limit, the only correct action is SKIP.
 - You may set an optional take-profit price if you'd rather lock in gains before resolution than
@@ -53,6 +57,7 @@ def decide(
     # SKIP back into a trade.
     system = SYSTEM_PROMPT.format(
         max_stake=config.MAX_STAKE_PER_TRADE_USDC,
+        min_entry_price=config.MIN_ENTRY_PRICE,
         profile_name=config.RISK_PROFILE_NAME,
         posture=config.RISK_PROFILE.posture,
     )

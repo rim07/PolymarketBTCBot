@@ -79,17 +79,38 @@ def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
     model_p_side = signal.p_up if side == "UP" else 1.0 - signal.p_up
 
     liquidity_ok = _depth_is_tradeable(ask_size, ask)
+
+    # An edge is `p_side - ask`, so it gets *easier* to clear a fixed bps
+    # threshold the cheaper the contract is — and p_side is capped near 0.5 by
+    # PROBABILITY_SHRINKAGE_K, so the only way to clear a large threshold at all
+    # is for the ask to be small. Left alone, that turns the minimum-edge test
+    # into "buy whatever is cheapest": at K=0.40 and a 2400bps threshold, a
+    # p_side of 0.504 — a coin flip the model has no view on — reported a 3040bps
+    # edge against an ask of 0.20 and traded, while nothing above 0.46 could ever
+    # qualify no matter how confident the model was. Same root cause as the
+    # side-selection bug noted above (shrinkage manufacturing apparent edge),
+    # surviving on the side p_up actually favors.
+    #
+    # So the threshold is paired with two gates it can't be traded off against:
+    conviction_ok = model_p_side >= config.MIN_MODEL_P_SIDE   # a real view, priced or not
+    price_ok = ask >= config.MIN_ENTRY_PRICE                  # not a contract the market has written off
+
     has_edge = (
         edge_bps >= config.MIN_EDGE_BPS_TO_TRADE
+        and conviction_ok
+        and price_ok
         and liquidity_ok
         and signal.confidence > 0.0
     )
 
     rationale = (
         f"side={side} edge={edge_bps:.0f}bps (threshold={config.MIN_EDGE_BPS_TO_TRADE}bps) "
-        f"entry_ask={ask:.3f} ask_size={ask_size:.1f} depth=${ask_size * ask:.2f} "
+        f"entry_ask={ask:.3f} (floor={config.MIN_ENTRY_PRICE:.2f}) price_ok={price_ok} "
+        f"model_p_side={model_p_side:.3f} (floor={config.MIN_MODEL_P_SIDE:.2f}) "
+        f"conviction_ok={conviction_ok} "
+        f"ask_size={ask_size:.1f} depth=${ask_size * ask:.2f} "
         f"(floor=${config.MIN_LIQUIDITY_USDC:.2f}) liquidity_ok={liquidity_ok} "
-        f"model_p_side={model_p_side:.3f} signal_confidence={signal.confidence:.2f}"
+        f"signal_confidence={signal.confidence:.2f}"
     )
 
     return EdgeOutput(

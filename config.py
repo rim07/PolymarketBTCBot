@@ -50,6 +50,12 @@ DAILY_LOSS_LIMIT_USDC = RISK_PROFILE.daily_loss_limit_usdc
 MAX_PRICE_SLIPPAGE_BPS = RISK_PROFILE.max_price_slippage_bps  # limit_price may not exceed the observed entry_price by more than this
 MIN_EDGE_BPS_TO_TRADE = RISK_PROFILE.min_edge_bps_to_trade
 PROBABILITY_SHRINKAGE_K = RISK_PROFILE.probability_shrinkage_k  # quant_signal.py: p_used = 0.5 + K*(p_raw - 0.5)
+# The two gates that stop MIN_EDGE_BPS_TO_TRADE from being satisfiable by a cheap
+# price alone. See design rule 3 in risk_profiles.py: `p_side - ask >= threshold`
+# gets *easier* to clear the less the contract costs, so on its own it selects for
+# near-worthless contracts bought on no conviction.
+MIN_MODEL_P_SIDE = RISK_PROFILE.min_model_p_side
+MIN_ENTRY_PRICE = RISK_PROFILE.min_entry_price
 MIN_LIQUIDITY_USDC = RISK_PROFILE.min_liquidity_usdc
 KELLY_ENABLED = RISK_PROFILE.kelly_enabled
 KELLY_MULTIPLIER = RISK_PROFILE.kelly_multiplier

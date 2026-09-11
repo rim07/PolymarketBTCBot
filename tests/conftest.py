@@ -26,6 +26,8 @@ _PROFILE_CONSTANTS = {
     "MAX_PRICE_SLIPPAGE_BPS": "max_price_slippage_bps",
     "MIN_EDGE_BPS_TO_TRADE": "min_edge_bps_to_trade",
     "PROBABILITY_SHRINKAGE_K": "probability_shrinkage_k",
+    "MIN_MODEL_P_SIDE": "min_model_p_side",
+    "MIN_ENTRY_PRICE": "min_entry_price",
     "MIN_LIQUIDITY_USDC": "min_liquidity_usdc",
     "KELLY_ENABLED": "kelly_enabled",
     "KELLY_MULTIPLIER": "kelly_multiplier",
