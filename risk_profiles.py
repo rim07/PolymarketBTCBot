@@ -155,13 +155,22 @@ STANDARD = RiskProfile(
     max_price_slippage_bps=200,
     min_stake_usdc=1.00,
     # Was 2400, which combined with K=0.40 to cap the entry price at 0.46 and
-    # confine the desk to deep underdogs (design rule 3 above). 800bps is a
-    # post-shrinkage margin: shrinkage has *already* discounted the model's
-    # overconfidence, and demanding another 24 points on top of it double-counted
-    # the same correction until the only trades left were the ones the market had
-    # written off. 8 points of edge on a shrunk probability, plus a conviction
-    # floor and a price floor, is the selectivity — not a single large number.
-    min_edge_bps_to_trade=800,
+    # confine the desk to deep underdogs (design rule 3 above). Shrinkage has
+    # *already* discounted the model's overconfidence, so demanding another 24
+    # points on top of it double-counted the same correction until the only
+    # trades left were the ones the market had written off. Replayed against the
+    # 2026-09-09/10 journal, a 2400bps threshold under today's shrinkage selects
+    # 8 trades at a median entry of 0.25 and goes 0-for-8 for -$19.00.
+    #
+    # With min_model_p_side and min_entry_price now doing the selecting, this
+    # number's only remaining job is a margin of safety — don't pay nearly the
+    # full probability the model itself is claiming. 500bps is sized against the
+    # headroom that exists: p_side is capped at 0.70 here and entries floor at
+    # 0.25, so the whole usable band is 45 points wide and an 800bps margin ate a
+    # fifth of it (5 surviving trades in the replay, vs 9 at 500bps). Keep this
+    # proportionate to `max_reachable_entry_price - min_entry_price`, not tuned
+    # for its own sake.
+    min_edge_bps_to_trade=500,
     # The quant signal is badly overconfident (stated p averaged 0.731 on entries
     # bought against a realized 55.6%, an implied K of ~0.24). 0.40 is a
     # conservative middle setting pending a proper fit on more closed trades.
@@ -203,11 +212,11 @@ AGGRESSIVE = RiskProfile(
     # drawn-down bankroll, and when it does, not trading is the correct answer —
     # the position slot is worth more than a $0.40 punt.
     min_stake_usdc=1.00,
-    # Below standard's 800. This is the single biggest driver of trade count, and
+    # Below standard's 500. This is the single biggest driver of trade count, and
     # therefore of how fast a real edge compounds — or a negative one bleeds.
     # Thin edges get Kelly-sized down here rather than skipped, which is what
     # makes a low threshold tolerable in this profile and not in standard.
-    min_edge_bps_to_trade=500,
+    min_edge_bps_to_trade=300,
     # Trust the model further out from 0.5. Note this compounds with the lower
     # edge threshold: less shrinkage widens every |p - 0.5|, which inflates
     # edge_bps as well, so the two together are a large loosening rather than two
