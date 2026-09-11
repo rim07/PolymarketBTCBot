@@ -25,6 +25,12 @@ _JOURNAL_FIELDS = [
     "cycle_id", "model_p_up", "edge_bps", "decision_rationale", "agent_model_ids",
     "strategy_tag", "market_implied_p_up", "entry_ask", "fill_price", "remaining_seconds",
     "order_status",
+    # The settled quantity is the window's TWAP vs. its opening reference, so how
+    # much of that average was already locked in at entry is the key covariate for
+    # refitting PROBABILITY_SHRINKAGE_K against the current estimator.
+    # reference_degraded flags entries priced off a fallback reference (no
+    # pre-roll history), which should be analysed separately.
+    "twap_so_far_bps", "reference_degraded",
 ]
 
 _RISK_LOG_FIELDS = ["timestamp", "cycle_id", "market_slug", "approved", "reason", "decision_json"]

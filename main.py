@@ -62,6 +62,8 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str, remaining_
         "market_implied_p_up": f"{edge_result.market_implied_p_up:.4f}",
         "entry_ask": f"{edge_result.entry_price:.4f}",
         "remaining_seconds": f"{remaining_seconds:.0f}",
+        "twap_so_far_bps": f"{sig.twap_so_far_bps:+.2f}",
+        "reference_degraded": "" if sig.reference_ok else "true",
     }
 
     if config.DRY_RUN:
@@ -219,7 +221,39 @@ def _monitor_take_profit(position, market) -> None:
     })
 
 
-def run_window() -> None:
+def _preroll_tracker() -> RollingPriceTracker:
+    """Sample spot for the last PREROLL_SECONDS before the next window boundary,
+    then return at the boundary.
+
+    This replaces a plain sleep-to-boundary because the settlement reference is a
+    60-second trailing TWAP *at* the boundary — it cannot be computed from
+    in-window samples alone. Without the pre-roll, quant_signal falls back to the
+    first in-window spot print, which misses the structural fact that a market
+    trending into its own boundary starts out already above or below the average
+    it will be measured against.
+    """
+    tracker = RollingPriceTracker()
+    samples = 0
+    while not _shutdown_requested:
+        remaining = scheduler.seconds_until_next_window()
+        if remaining <= 0.75:
+            break
+        if remaining > config.PREROLL_SECONDS:
+            # Still early — wait in bounded chunks so shutdown stays responsive.
+            time.sleep(min(remaining - config.PREROLL_SECONDS, 30.0))
+            continue
+        try:
+            tracker.add(fetch_spot_price())
+            samples += 1
+        except Exception as e:
+            log.warning("Pre-roll price sample failed: %s", e)
+        time.sleep(min(config.PREROLL_TICK_SECONDS, max(scheduler.seconds_until_next_window() - 0.5, 0.1)))
+
+    log.info("Pre-roll collected %d samples ahead of the window boundary.", samples)
+    return tracker
+
+
+def run_window(tracker: RollingPriceTracker | None = None) -> None:
     try:
         market = discover_market()
     except MarketNotFoundError as e:
@@ -227,12 +261,20 @@ def run_window() -> None:
         return
 
     log.info("Window open: %s (%s)", market.slug, market.question)
-    tracker = RollingPriceTracker()
-    window_start_monotonic = time.monotonic()
+    if tracker is None:
+        tracker = RollingPriceTracker()
+
+    # Timed against the market's own boundaries rather than a monotonic clock
+    # started after discovery: the slug encodes the window start, settlement is
+    # measured over exactly that span, and the tracker's sample timestamps are
+    # wall-clock, so the integral in quant_signal has to share that frame.
+    window_start_ts = market.window_start.timestamp()
+    window_end_ts = market.window_end.timestamp()
 
     while True:
-        elapsed = time.monotonic() - window_start_monotonic
-        remaining = config.WINDOW_SECONDS - elapsed
+        now_ts = time.time()
+        elapsed = now_ts - window_start_ts
+        remaining = window_end_ts - now_ts
         if remaining <= 0 or _shutdown_requested:
             break
 
@@ -282,7 +324,7 @@ def run_window() -> None:
                 time.sleep(scheduler.tick_interval_seconds(elapsed))
                 continue
 
-            sig = quant_signal.estimate_p_up(tracker, elapsed, remaining)
+            sig = quant_signal.estimate_p_up(tracker, elapsed, remaining, window_start_ts)
             edge_result = assess_edge(sig, book)
 
             if edge_result.has_edge:
@@ -335,10 +377,11 @@ def main() -> None:
         except Exception as e:
             log.warning("Redemption sweep failed: %s", e)
 
-        scheduler.sleep_until_next_window()
+        # Pre-roll doubles as the wait for the next boundary.
+        tracker = _preroll_tracker()
         if _shutdown_requested:
             break
-        run_window()
+        run_window(tracker)
 
     log.info("Shutdown complete.")
 

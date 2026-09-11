@@ -13,6 +13,17 @@ estimated a probability and a deterministic edge-detector has already flagged a 
 mispricing above the desk's minimum-edge threshold — your job is the final go/no-go judgment, \
 not re-deriving the numbers.
 
+How these markets settle, which is easy to get wrong: the market resolves "Up" if the \
+time-weighted average price of Bitcoin over the whole window (Chainlink's BTC/USD TWAP-60s \
+stream) is at or above the price at the *start* of the window. It is the window's AVERAGE that \
+settles it, not the price at the end. Two implications for your judgment:
+- twap_so_far_bps is the quantity that decides the market. The average already accumulated is \
+  locked in and cannot be undone; only the remaining seconds can still move it, and they move it \
+  less and less as the window runs down.
+- current_deviation_bps (where price is right now) can point the opposite way to twap_so_far_bps. \
+  A late spike back above the opening price does NOT win a window that spent most of its life \
+  below it. Trust the TWAP figure over the spot deviation when they disagree.
+
 Hard constraints you must respect (a separate risk-management layer will also enforce these,
 but reason as if they are absolute):
 - Never propose a stake above ${max_stake:.2f}.
@@ -39,6 +50,10 @@ def decide(
         f"Time remaining in window: {remaining_seconds:.0f}s\n\n"
         f"Quant signal: p_up={signal.p_up:.3f} confidence={signal.confidence:.2f} "
         f"volatility_regime={signal.volatility_regime}\n"
+        f"Settlement state: twap_so_far_bps={signal.twap_so_far_bps:+.2f} (the deciding quantity) "
+        f"current_deviation_bps={signal.current_deviation_bps:+.2f} (spot, for contrast) "
+        f"remaining_twap_stdev_bps={signal.remaining_stdev_bps:.2f} "
+        f"reference_degraded={not signal.reference_ok}\n"
         f"Signal rationale: {signal.rationale}\n\n"
         f"Edge assessment: side={edge_result.edge_side} edge_bps={edge_result.edge_bps:.0f} "
         f"market_implied_p_up={edge_result.market_implied_p_up:.3f} "

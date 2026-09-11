@@ -50,6 +50,26 @@ FAST_TICK_SECONDS = 18       # cadence for the first FAST_PHASE_SECONDS of a win
 FAST_PHASE_SECONDS = 105
 SLOW_TICK_SECONDS = 35        # cadence for the remainder of the window
 DISCOVERY_TIMEOUT_SECONDS = 8
+
+# --- Settlement series modelling (see price_feed.py and quant_signal.py) ---
+# Polymarket settles on the TWAP of Chainlink's BTC/USD *TWAP-60s* stream, so the
+# series we model is a 60-second trailing average. Matching the stream's own
+# window is the point; changing this makes our series a different shape from the
+# one that decides the market.
+SETTLEMENT_TWAP_LOOKBACK_SECONDS = 60
+# The settlement reference is that trailing average *at the window boundary*,
+# which can only be computed from history predating the window. So we start
+# sampling before the boundary. Slightly more than the lookback, for full
+# coverage even if a sample or two fails.
+PREROLL_SECONDS = 75
+PREROLL_TICK_SECONDS = 10
+# Below this window-scale volatility the signal refuses to have an opinion. The
+# probability is a ratio of accumulated area to remaining diffusion, so a σ near
+# zero makes any nonzero area look like certainty — and a σ this low doesn't mean
+# calm, it means the feed is stuck or quantised. Reference points: BTC's
+# annualised vol implies a ~15bps 5-minute stdev, but a live 95-second sample on
+# 2026-09-11 measured only 3.0bps in a quiet hour. 1bps is below both.
+MIN_WINDOW_STDEV_BPS = 1.0
 # 12s was too tight: the Head-Trader model runs adaptive thinking (on by
 # default when no `thinking` param is sent), so tail latency regularly exceeds
 # it — and a timed-out call means a *skipped candidate edge*, which is the rare
@@ -63,11 +83,16 @@ GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 MARKET_SLUG_PREFIX = "btc-updown-5m-"  # + window-start epoch seconds (UTC)
 
 # --- Chain (Polygon mainnet, chain_id 137) ---
-# Only used for the Chainlink cross-check read in price_feed.py — order
+# Only used for the Chainlink level cross-check in price_feed.py — order
 # placement/redemption go through polymarket-client's SecureClient, which
 # manages its own RPC/relayer internally and needs none of this.
 CHAIN_ID = 137
 POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+# The on-chain BTC/USD aggregator. This is NOT the feed these markets settle on:
+# settlement uses the Chainlink *Data Streams* BTC/USD TWAP-60s stream
+# (data.chain.link/streams/btc-usd-twap-60s-streams), a different, off-chain,
+# credentialed product. This aggregator is a spot-level sanity check only, and it
+# only updates on a deviation/heartbeat trigger, so a read can be minutes stale.
 CHAINLINK_BTCUSD_FEED_ADDRESS = "0xc907E116054Ad103354f2D350FD2514433D57F6f"  # Polygon mainnet, 8 decimals
 
 # --- Wallet auth (from .env, never hardcoded) ---

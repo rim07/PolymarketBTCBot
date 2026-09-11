@@ -115,3 +115,13 @@ def get_market_by_slug(slug: str) -> Optional[dict]:
         return _query_gamma_by_slug(slug, closed=True)
     except Exception:
         return None
+
+
+def get_open_market_by_slug(slug: str) -> Optional[dict]:
+    """Raw Gamma row for a market that hasn't closed yet, i.e. the default
+    active-only query. Deliberately separate from get_market_by_slug(), which
+    forces closed=true and so returns None for a window that's still live."""
+    try:
+        return _query_gamma_by_slug(slug)
+    except Exception:
+        return None
