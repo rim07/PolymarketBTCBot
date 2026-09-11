@@ -9,6 +9,7 @@ position tracked in state.py's open_position field," which is only correct
 while MAX_CONCURRENT_POSITIONS == 1 (the approved value). If that's ever
 raised, this needs to track a list, not a single slot.
 """
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -20,6 +21,19 @@ import state
 from edge import EdgeOutput
 from llm.schemas import TradeDecision
 from market_discovery import MarketInfo
+
+# Fail loudly rather than silently under-enforcing. The single-slot check below
+# cannot express "at most N positions", so raising the config value without
+# rewriting this module would leave the cap unenforced — the one failure mode
+# this file exists to prevent.
+if config.MAX_CONCURRENT_POSITIONS != 1:
+    raise RuntimeError(
+        f"MAX_CONCURRENT_POSITIONS is {config.MAX_CONCURRENT_POSITIONS}, but risk_manager only "
+        "enforces a single position slot. Rewrite the open-position check to track a list before "
+        "raising this."
+    )
+
+_TICK = 0.01  # exchange share/price tick size
 
 
 @dataclass
@@ -103,7 +117,17 @@ def evaluate(
         return None
 
     stake = min(decision.stake_usdc, config.MAX_STAKE_PER_TRADE_USDC)
-    size_shares = stake / price
+    # Floor to the tick, not round: the exchange only accepts share counts on the
+    # 0.01 tick, and rounding up can push the cost past the per-trade cap
+    # (3.00 / 0.70 = 4.2857 -> 4.29 shares = $3.003). The cap is absolute, so it
+    # takes the fraction of a cent on the safe side. Deriving the stake back from
+    # the tick-aligned size also keeps stake, size and price mutually consistent
+    # instead of leaving clob_client to re-round and disagree with the journal.
+    size_shares = math.floor(stake / price / _TICK) * _TICK
+    stake = round(size_shares * price, 6)
+    if size_shares <= 0:
+        _reject(cycle_id, market.slug, "stake_too_small_for_one_tick", decision_json)
+        return None
 
     try:
         min_order_size = clob_client.get_min_order_size(token_id)
@@ -113,6 +137,23 @@ def evaluate(
 
     if min_order_size and size_shares < min_order_size:
         _reject(cycle_id, market.slug, "below_min_order_size", decision_json)
+        return None
+
+    # Last check before approval: can we actually pay for it? Without this the
+    # desk keeps finding edges and firing orders the exchange rejects for
+    # insufficient collateral — an error-level log line per attempt and no
+    # indication that the wallet, not the strategy, is the problem.
+    try:
+        balance = clob_client.get_collateral_balance_usdc()
+    except Exception:
+        _reject(cycle_id, market.slug, "collateral_balance_lookup_failed", decision_json)
+        return None
+
+    if balance < stake:
+        _reject(
+            cycle_id, market.slug,
+            f"insufficient_collateral: balance ${balance:.2f} < stake ${stake:.2f}", decision_json,
+        )
         return None
 
     journal.write_risk_log_row(cycle_id, market.slug, approved=True, reason="approved", decision_json=decision_json)

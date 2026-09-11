@@ -4,6 +4,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import risk_manager
@@ -37,12 +39,13 @@ def _edge(**overrides) -> EdgeOutput:
     return EdgeOutput(**base)
 
 
-def _patch_common(monkeypatch, *, kill_engaged=False, daily_pnl=0.0, open_position=None):
+def _patch_common(monkeypatch, *, kill_engaged=False, daily_pnl=0.0, open_position=None, balance=425.0):
     monkeypatch.setattr("kill_switch.is_engaged", lambda: kill_engaged)
     fake_state = state.DailyState(trading_day="2026-01-01", realized_pnl_usdc=daily_pnl, open_position=open_position)
     monkeypatch.setattr("state.load", lambda: fake_state)
     monkeypatch.setattr("state.ensure_current_day", lambda s: s)
     monkeypatch.setattr("journal.write_risk_log_row", lambda *a, **k: None)
+    monkeypatch.setattr("clob_client.get_collateral_balance_usdc", lambda: balance)
 
 
 def test_kill_switch_rejects(monkeypatch):
@@ -99,7 +102,42 @@ def test_oversized_stake_is_clipped_not_rejected(monkeypatch):
     monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
     result = risk_manager.evaluate(_decision(stake_usdc=500.0), _market(), "111", "222", "cyc5", _edge())
     assert result is not None
-    assert result.stake_usdc == config.MAX_STAKE_PER_TRADE_USDC
+    assert result.stake_usdc <= config.MAX_STAKE_PER_TRADE_USDC
+
+
+def test_stake_never_exceeds_the_cap_after_tick_alignment(monkeypatch):
+    """0.70 doesn't divide the cap evenly, so rounding the share count up would
+    put the order a fraction of a cent over a cap that's meant to be absolute."""
+    import config
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(
+        _decision(stake_usdc=500.0, limit_price=0.70), _market(), "111", "222", "cyc5b",
+        _edge(entry_price=0.70),
+    )
+    assert result is not None
+    assert result.stake_usdc <= config.MAX_STAKE_PER_TRADE_USDC
+    # size, price and stake all agree, and size sits on the 0.01 tick.
+    assert result.size_shares == round(result.size_shares, 2)
+    assert result.stake_usdc == pytest.approx(result.size_shares * result.limit_price)
+
+
+def test_insufficient_collateral_rejects(monkeypatch):
+    _patch_common(monkeypatch, balance=0.50)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc5c", _edge())
+    assert result is None
+
+
+def test_collateral_lookup_failure_rejects(monkeypatch):
+    def boom():
+        raise RuntimeError("rpc down")
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    monkeypatch.setattr("clob_client.get_collateral_balance_usdc", boom)
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyc5d", _edge())
+    assert result is None
 
 
 def test_price_out_of_bounds_rejects(monkeypatch):

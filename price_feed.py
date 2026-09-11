@@ -75,8 +75,11 @@ def fetch_spot_price() -> float:
         return fetch_coinbase_price()
 
 
-def fetch_chainlink_btcusd() -> float:
-    """Read the on-chain Chainlink BTC/USD feed used for settlement. Read-only, no gas."""
+def fetch_chainlink_btcusd() -> tuple[float, int]:
+    """Read the on-chain Chainlink BTC/USD feed used for settlement. Read-only,
+    no gas. Returns (price_usd, updated_at_epoch_seconds) — the timestamp matters
+    because this feed only updates on a deviation/heartbeat trigger, so a "live"
+    read can legitimately be minutes stale, which is most of a 5-minute window."""
     global _web3, _chainlink_feed
     if _chainlink_feed is None:
         from web3 import Web3

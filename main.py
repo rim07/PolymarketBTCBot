@@ -51,25 +51,38 @@ def _strategy_tag(sig, approved) -> str:
     return "price_arb" if p_side < 0.5 else "directional"
 
 
-def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
+def _execute_order(approved, market, sig, edge_result, cycle_id: str, remaining_seconds: float) -> None:
     tag = _strategy_tag(sig, approved)
+    analytics = {
+        "cycle_id": cycle_id,
+        "model_p_up": f"{sig.p_up:.4f}",
+        "edge_bps": f"{edge_result.edge_bps:.0f}",
+        "agent_model_ids": config.HEAD_TRADER_MODEL,
+        "strategy_tag": tag,
+        "market_implied_p_up": f"{edge_result.market_implied_p_up:.4f}",
+        "entry_ask": f"{edge_result.entry_price:.4f}",
+        "remaining_seconds": f"{remaining_seconds:.0f}",
+    }
+
     if config.DRY_RUN:
         log.info(
             "[%s] DRY_RUN: would BUY %s %.2f shares @ %.3f ($%.2f) on %s",
             cycle_id, approved.side, approved.size_shares, approved.limit_price, approved.stake_usdc, market.slug,
         )
         journal.write_trade_row({
+            **analytics,
             "marketName": market.question, "action": "DryRunBuy",
             "usdcAmount": f"{approved.stake_usdc:.6f}", "tokenAmount": f"{approved.size_shares:.6f}",
-            "tokenName": approved.side, "cycle_id": cycle_id,
-            "model_p_up": f"{sig.p_up:.4f}", "edge_bps": f"{edge_result.edge_bps:.0f}",
-            "decision_rationale": f"dry_run tag={tag}", "agent_model_ids": config.HEAD_TRADER_MODEL,
+            "tokenName": approved.side,
+            "fill_price": f"{approved.limit_price:.4f}", "order_status": "dry_run",
+            "decision_rationale": f"dry_run tag={tag}",
         })
         daily_state = state.ensure_current_day(state.load())
         state.record_open(daily_state, state.OpenPosition(
             token_id=approved.token_id, side=approved.side, market_slug=market.slug,
             entry_price=approved.limit_price, stake_usdc=approved.stake_usdc, size_shares=approved.size_shares,
             opened_at=datetime.now(timezone.utc).isoformat(),
+            cycle_id=cycle_id,
             take_profit_price=approved.take_profit_price, hold_to_resolution=approved.hold_to_resolution,
             is_dry_run=True,
         ))
@@ -82,22 +95,49 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str) -> None:
         journal.write_risk_log_row(cycle_id, market.slug, approved=True, reason=f"order_placement_failed: {e}")
         return
 
+    if not placed.filled:
+        # Accepted but not matched — it's resting on the book, we own nothing.
+        # Recording a position here would block every later window and then book
+        # a fabricated full-stake loss at resolution. Cancel and walk away; the
+        # next tick re-evaluates against a fresh book.
+        log.warning(
+            "[%s] Order %s accepted but not filled (status=%s) — cancelling, no position opened.",
+            cycle_id, placed.order_id, placed.status,
+        )
+        try:
+            clob_client.cancel_order(placed.order_id)
+        except Exception as e:
+            log.error(
+                "[%s] Could not cancel unfilled order %s: %s — it may still be live on the book. "
+                "Check Polymarket manually.", cycle_id, placed.order_id, e,
+            )
+        journal.write_risk_log_row(
+            cycle_id, market.slug, approved=True, reason=f"order_not_filled_cancelled: status={placed.status}",
+        )
+        return
+
+    fill_price = placed.filled_usdc / placed.filled_shares
     log.info(
-        "[%s] Placed order %s: BUY %s %.2f shares @ %.3f ($%.2f)",
-        cycle_id, placed.order_id, approved.side, approved.size_shares, approved.limit_price, approved.stake_usdc,
+        "[%s] Filled order %s: BUY %s %.2f shares @ %.3f ($%.2f) [quoted ask %.3f, slippage %+.0fbps]",
+        cycle_id, placed.order_id, approved.side, placed.filled_shares, fill_price, placed.filled_usdc,
+        edge_result.entry_price, (fill_price - edge_result.entry_price) * 10_000,
     )
     journal.write_trade_row({
+        **analytics,
         "marketName": market.question, "action": "Buy",
-        "usdcAmount": f"{approved.stake_usdc:.6f}", "tokenAmount": f"{approved.size_shares:.6f}",
-        "tokenName": approved.side, "hash": placed.order_id, "cycle_id": cycle_id,
-        "model_p_up": f"{sig.p_up:.4f}", "edge_bps": f"{edge_result.edge_bps:.0f}",
-        "decision_rationale": f"approved tag={tag}", "agent_model_ids": config.HEAD_TRADER_MODEL,
+        "usdcAmount": f"{placed.filled_usdc:.6f}", "tokenAmount": f"{placed.filled_shares:.6f}",
+        "tokenName": approved.side, "hash": placed.order_id,
+        "fill_price": f"{fill_price:.4f}", "order_status": placed.status,
+        "decision_rationale": f"approved tag={tag}",
     })
     daily_state = state.ensure_current_day(state.load())
     state.record_open(daily_state, state.OpenPosition(
         token_id=approved.token_id, side=approved.side, market_slug=market.slug,
-        entry_price=approved.limit_price, stake_usdc=approved.stake_usdc, size_shares=approved.size_shares,
+        # The amounts actually filled, not the amounts intended — a partial fill
+        # must not be redeemed or PnL'd as if it were whole.
+        entry_price=fill_price, stake_usdc=placed.filled_usdc, size_shares=placed.filled_shares,
         opened_at=datetime.now(timezone.utc).isoformat(),
+        cycle_id=cycle_id,
         take_profit_price=approved.take_profit_price, hold_to_resolution=approved.hold_to_resolution,
         is_dry_run=False,
     ))
@@ -123,18 +163,59 @@ def _monitor_take_profit(position, market) -> None:
         return
 
     try:
-        clob_client.place_limit_sell(token_id, current_bid, position.size_shares)
+        sold = clob_client.place_limit_sell(token_id, current_bid, position.size_shares)
     except Exception as e:
         log.error("Take-profit sell failed: %s", e)
         return
 
-    pnl = position.size_shares * current_bid - position.stake_usdc
+    if not sold.filled:
+        # We still hold the shares. Closing local state here would leave the desk
+        # believing it's flat while holding a real position — it would open a
+        # second one next window and the orphaned shares would redeem untracked.
+        log.warning(
+            "Take-profit sell %s accepted but not filled (status=%s) — cancelling and holding the "
+            "position; it will resolve normally.", sold.order_id, sold.status,
+        )
+        try:
+            clob_client.cancel_order(sold.order_id)
+        except Exception as e:
+            log.error("Could not cancel unfilled take-profit sell %s: %s", sold.order_id, e)
+        return
+
+    if sold.filled_shares < position.size_shares * 0.999:
+        # Partial exit: book what actually sold and keep the remainder open so it
+        # redeems at resolution.
+        remaining_shares = position.size_shares - sold.filled_shares
+        proceeds = sold.filled_usdc
+        cost_of_sold = position.entry_price * sold.filled_shares
+        pnl = proceeds - cost_of_sold
+        log.warning(
+            "Take-profit PARTIAL: sold %.2f of %.2f shares for $%.2f (pnl %+.2f); %.2f shares still held.",
+            sold.filled_shares, position.size_shares, proceeds, pnl, remaining_shares,
+        )
+        daily_state = state.ensure_current_day(state.load())
+        daily_state.realized_pnl_usdc += pnl
+        position.size_shares = remaining_shares
+        position.stake_usdc -= cost_of_sold
+        state.record_open(daily_state, position)
+        journal.write_trade_row({
+            "marketName": position.market_slug, "action": "Sell",
+            "usdcAmount": f"{proceeds:.6f}", "tokenAmount": f"{sold.filled_shares:.6f}",
+            "tokenName": position.side, "hash": sold.order_id, "cycle_id": position.cycle_id,
+            "fill_price": f"{proceeds / sold.filled_shares:.4f}", "order_status": sold.status,
+            "decision_rationale": f"take_profit_partial pnl={pnl:.2f}",
+        })
+        return
+
+    pnl = sold.filled_usdc - position.stake_usdc
     daily_state = state.ensure_current_day(state.load())
     state.record_close(daily_state, realized_pnl_usdc=pnl)
     journal.write_trade_row({
         "marketName": position.market_slug, "action": "Sell",
-        "usdcAmount": f"{position.size_shares * current_bid:.6f}", "tokenAmount": f"{position.size_shares:.6f}",
-        "tokenName": position.side, "decision_rationale": f"take_profit pnl={pnl:.2f}",
+        "usdcAmount": f"{sold.filled_usdc:.6f}", "tokenAmount": f"{sold.filled_shares:.6f}",
+        "tokenName": position.side, "hash": sold.order_id, "cycle_id": position.cycle_id,
+        "fill_price": f"{sold.filled_usdc / sold.filled_shares:.4f}", "order_status": sold.status,
+        "decision_rationale": f"take_profit pnl={pnl:.2f}",
     })
 
 
@@ -172,6 +253,25 @@ def run_window() -> None:
                     "check logs/bot.log for redemption sweep errors.",
                     daily_state.open_position.market_slug, position_age.total_seconds(),
                 )
+
+            # Retry the sweep here, not just once per window boundary. A position
+            # from the previous window usually becomes redeemable a minute or two
+            # into this one, and until it clears it blocks all new entries — so
+            # sweeping only at the boundary threw away most of a window every
+            # time Gamma's indexing lagged. One cheap Gamma read per tick, and
+            # only while a position from an earlier window is actually open.
+            if daily_state.open_position.market_slug != market.slug:
+                try:
+                    redeem_positions.sweep()
+                except Exception as e:
+                    log.warning("Mid-window redemption sweep failed: %s", e)
+                daily_state = state.ensure_current_day(state.load())
+                if daily_state.open_position is None:
+                    # Don't sleep — go straight back round and start looking for
+                    # an entry in the window time that's left.
+                    log.info("Previous position cleared mid-window; resuming entries on %s.", market.slug)
+                    continue
+
             _monitor_take_profit(daily_state.open_position, market)
         else:
             cycle_id = str(uuid.uuid4())[:8]
@@ -212,7 +312,7 @@ def run_window() -> None:
                         decision, market, market.up_token_id, market.down_token_id, cycle_id, edge_result
                     )
                     if approved is not None:
-                        _execute_order(approved, market, sig, edge_result, cycle_id)
+                        _execute_order(approved, market, sig, edge_result, cycle_id, remaining)
             else:
                 journal.write_risk_log_row(cycle_id, market.slug, approved=False, reason="no_edge")
 

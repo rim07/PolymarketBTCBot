@@ -60,7 +60,9 @@ def sweep() -> None:
         journal.write_trade_row({
             "marketName": position.market_slug, "action": "DryRunRedeem",
             "usdcAmount": f"{payout_usdc:.6f}", "tokenAmount": f"{position.size_shares:.6f}",
-            "tokenName": position.side, "decision_rationale": f"won={won} pnl={pnl:.2f}",
+            "tokenName": position.side, "cycle_id": position.cycle_id,
+            "fill_price": f"{position.entry_price:.4f}",
+            "decision_rationale": f"won={won} pnl={pnl:.2f}",
         })
         state.record_close(daily_state, realized_pnl_usdc=pnl)
         return
@@ -74,7 +76,8 @@ def sweep() -> None:
     journal.write_trade_row({
         "marketName": position.market_slug, "action": "Redeem",
         "usdcAmount": f"{payout_usdc:.6f}", "tokenAmount": f"{position.size_shares:.6f}",
-        "tokenName": position.side, "hash": tx_hash,
+        "tokenName": position.side, "hash": tx_hash, "cycle_id": position.cycle_id,
+        "fill_price": f"{position.entry_price:.4f}",
         "decision_rationale": f"won={won} pnl={pnl:.2f}",
     })
     state.record_close(daily_state, realized_pnl_usdc=pnl)

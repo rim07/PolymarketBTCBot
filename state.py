@@ -18,6 +18,13 @@ class OpenPosition:
     stake_usdc: float
     size_shares: float
     opened_at: str
+    # The cycle_id of the Buy that opened this position, carried through to the
+    # Redeem/Sell row so the two can be joined. Without a shared key there's no
+    # way to line up "what the model claimed" (on the Buy row) against "what
+    # actually happened" (on the Redeem row), which is precisely the join the
+    # calibration work needs. Defaults to "" for positions written by an older
+    # build that didn't record it.
+    cycle_id: str = ""
     take_profit_price: Optional[float] = None
     hold_to_resolution: bool = True
     # Whether this position was opened while DRY_RUN was true — i.e. no real
