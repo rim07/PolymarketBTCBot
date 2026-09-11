@@ -29,9 +29,11 @@ but reason as if they are absolute):
 - Never propose a stake above ${max_stake:.2f}.
 - If a position is already open, or the kill switch is engaged, or today's realized loss is at
   or past the daily loss limit, the only correct action is SKIP.
-- Prefer SKIP over a marginal trade. This desk's edge comes from selectivity, not volume.
 - You may set an optional take-profit price if you'd rather lock in gains before resolution than
   hold through settlement risk; otherwise hold to resolution.
+
+This desk's current risk profile is "{profile_name}". Its posture:
+{posture}
 
 Respond with your trade decision in the required structured format only."""
 
@@ -44,7 +46,16 @@ def decide(
     daily_pnl_usdc: float,
     position_already_open: bool,
 ) -> TradeDecision:
-    system = SYSTEM_PROMPT.format(max_stake=config.MAX_STAKE_PER_TRADE_USDC)
+    # The profile has to reach the model, not just the risk manager: a prompt
+    # that says "prefer SKIP over a marginal trade" vetoes precisely the
+    # marginal-but-positive-expectancy trades an aggressive profile exists to
+    # take, and risk_manager can only ever reject a decision — it cannot turn a
+    # SKIP back into a trade.
+    system = SYSTEM_PROMPT.format(
+        max_stake=config.MAX_STAKE_PER_TRADE_USDC,
+        profile_name=config.RISK_PROFILE_NAME,
+        posture=config.RISK_PROFILE.posture,
+    )
     user_content = (
         f"Market: {market_question}\n"
         f"Time remaining in window: {remaining_seconds:.0f}s\n\n"
@@ -59,9 +70,11 @@ def decide(
         f"market_implied_p_up={edge_result.market_implied_p_up:.3f} "
         f"entry_price={edge_result.entry_price:.3f} liquidity_ok={edge_result.liquidity_ok}\n"
         f"Edge rationale: {edge_result.rationale}\n\n"
-        f"Risk state: daily_realized_pnl_usdc={daily_pnl_usdc:.2f} "
+        f"Risk state: risk_profile={config.RISK_PROFILE_NAME} "
+        f"daily_realized_pnl_usdc={daily_pnl_usdc:.2f} "
         f"(limit=-{config.DAILY_LOSS_LIMIT_USDC:.2f}), position_already_open={position_already_open}, "
-        f"max_stake_usdc={config.MAX_STAKE_PER_TRADE_USDC:.2f}"
+        f"max_stake_usdc={config.MAX_STAKE_PER_TRADE_USDC:.2f}, "
+        f"sizing={'kelly (your stake_usdc is advisory)' if config.KELLY_ENABLED else 'flat'}"
     )
     return parse_structured(
         model=config.HEAD_TRADER_MODEL,

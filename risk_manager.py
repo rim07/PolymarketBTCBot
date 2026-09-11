@@ -4,6 +4,11 @@ LLM's own output. If you find yourself wanting to let a decision "just this
 once" skip one of these checks, don't — that's exactly the failure mode this
 module exists to prevent.
 
+The active risk profile (risk_profiles.py) decides how big the caps are and
+whether sizing is flat or Kelly. It does not decide *whether* they're checked —
+every gate below runs identically in every profile, and the profile's values are
+read fresh from config on each call rather than captured anywhere.
+
 Known limitation: MAX_CONCURRENT_POSITIONS is enforced as "at most the one
 position tracked in state.py's open_position field," which is only correct
 while MAX_CONCURRENT_POSITIONS == 1 (the approved value). If that's ever
@@ -17,6 +22,7 @@ import clob_client
 import config
 import journal
 import kill_switch
+import risk_profiles
 import state
 from edge import EdgeOutput
 from llm.schemas import TradeDecision
@@ -46,6 +52,11 @@ class ApprovedOrder:
     take_profit_price: Optional[float]
     hold_to_resolution: bool
     market_slug: str
+    # The Kelly fraction that produced this size, 0.0 under flat sizing. Carried
+    # through to the journal so a profile's sizing can be evaluated separately
+    # from its entry selection — "did Kelly size the winners bigger?" is a
+    # different question from "were the entries any good?".
+    kelly_fraction: float = 0.0
 
 
 def _reject(cycle_id: str, market_slug: str, reason: str, decision_json: str = "") -> None:
@@ -116,7 +127,50 @@ def evaluate(
         _reject(cycle_id, market.slug, "price_exceeds_observed_market_plus_slippage", decision_json)
         return None
 
-    stake = min(decision.stake_usdc, config.MAX_STAKE_PER_TRADE_USDC)
+    # Bankroll is read before sizing because Kelly is a fraction *of* it, and
+    # because the same number answers "can we pay for this?" further down. Free
+    # collateral understates the true bankroll by whatever is tied up in an open
+    # position — but a position can't be open here (rejected above), so at this
+    # point the two agree. Note that under DRY_RUN this is still the real wallet
+    # balance, so simulated wins don't compound.
+    try:
+        balance = clob_client.get_collateral_balance_usdc()
+    except Exception:
+        _reject(cycle_id, market.slug, "collateral_balance_lookup_failed", decision_json)
+        return None
+
+    kelly_f = 0.0
+    if config.KELLY_ENABLED:
+        # Growth-optimal sizing on the model's own (already shrunk) probability
+        # for the side being bought. This is what makes an aggressive profile
+        # aggressive *about the right thing*: a thin edge is sized down instead
+        # of being skipped, and an edge that doesn't beat its price at all is
+        # rejected outright rather than sized at the cap because the LLM asked
+        # for it. The LLM's stake_usdc is advisory only here — it has no view of
+        # the bankroll and no basis for a dollar figure.
+        kelly_f = risk_profiles.stake_fraction(config.RISK_PROFILE, edge_result.model_p_side, price)
+        proposed_stake = kelly_f * max(balance, 0.0)
+        if proposed_stake <= 0.0:
+            _reject(
+                cycle_id, market.slug,
+                f"kelly_fraction_not_growth_positive: p_side={edge_result.model_p_side:.3f} "
+                f"price={price:.2f}", decision_json,
+            )
+            return None
+    else:
+        proposed_stake = decision.stake_usdc
+
+    stake = min(proposed_stake, config.MAX_STAKE_PER_TRADE_USDC)
+
+    # Cap at the notional actually resting at the entry ask. Sizing past visible
+    # depth means the remainder either rests unfilled (cancelled by main.py, a
+    # wasted candidate) or walks up the book at prices the edge calculation never
+    # saw. edge.py only guarantees depth above MIN_LIQUIDITY_USDC, which under an
+    # aggressive profile is well below the per-trade cap, so this is load-bearing
+    # rather than defensive.
+    if edge_result.entry_ask_size > 0:
+        stake = min(stake, edge_result.entry_ask_size * price)
+
     # Floor to the tick, not round: the exchange only accepts share counts on the
     # 0.01 tick, and rounding up can push the cost past the per-trade cap
     # (3.00 / 0.70 = 4.2857 -> 4.29 shares = $3.003). The cap is absolute, so it
@@ -127,6 +181,17 @@ def evaluate(
     stake = round(size_shares * price, 6)
     if size_shares <= 0:
         _reject(cycle_id, market.slug, "stake_too_small_for_one_tick", decision_json)
+        return None
+
+    if stake < config.MIN_STAKE_USDC:
+        # Kelly is a fraction of bankroll, so a weak edge or a drawn-down wallet
+        # sizes smoothly down towards dust rather than stopping. A trade this
+        # small still consumes the desk's only position slot for a whole window,
+        # so it's strictly worse than not trading.
+        _reject(
+            cycle_id, market.slug,
+            f"stake_below_profile_floor: ${stake:.2f} < ${config.MIN_STAKE_USDC:.2f}", decision_json,
+        )
         return None
 
     try:
@@ -143,12 +208,6 @@ def evaluate(
     # desk keeps finding edges and firing orders the exchange rejects for
     # insufficient collateral — an error-level log line per attempt and no
     # indication that the wallet, not the strategy, is the problem.
-    try:
-        balance = clob_client.get_collateral_balance_usdc()
-    except Exception:
-        _reject(cycle_id, market.slug, "collateral_balance_lookup_failed", decision_json)
-        return None
-
     if balance < stake:
         _reject(
             cycle_id, market.slug,
@@ -156,7 +215,14 @@ def evaluate(
         )
         return None
 
-    journal.write_risk_log_row(cycle_id, market.slug, approved=True, reason="approved", decision_json=decision_json)
+    journal.write_risk_log_row(
+        cycle_id, market.slug, approved=True,
+        reason=(
+            f"approved profile={config.RISK_PROFILE_NAME} stake=${stake:.2f} "
+            f"kelly_f={kelly_f:.4f} p_side={edge_result.model_p_side:.3f}"
+        ),
+        decision_json=decision_json,
+    )
 
     return ApprovedOrder(
         token_id=token_id,
@@ -167,4 +233,5 @@ def evaluate(
         take_profit_price=decision.take_profit_price,
         hold_to_resolution=decision.hold_to_resolution,
         market_slug=market.slug,
+        kelly_fraction=kelly_f,
     )

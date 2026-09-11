@@ -87,7 +87,13 @@ def _summarize(rows: list[dict]) -> tuple[str, str, float, float]:
     by_tag: dict[str, dict] = {}
     for cid, pnl in pnl_by_cycle.items():
         buy = buy_by_cycle.get(cid)
-        tag = (buy or {}).get("strategy_tag") or "unknown"
+        # Segmented by profile as well as strategy tag. Profiles run different
+        # edge thresholds and a different shrinkage K, so pooling their trades
+        # would average two strategies into one meaningless calibration number —
+        # which is exactly the mistake that makes an aggressive profile look
+        # fine while it quietly loses money.
+        profile = (buy or {}).get("risk_profile") or "standard"
+        tag = f"{profile}/{(buy or {}).get('strategy_tag') or 'unknown'}"
         bucket = by_tag.setdefault(tag, {"n": 0, "wins": 0, "pnl": 0.0, "p_side": [], "price": []})
         bucket["n"] += 1
         bucket["pnl"] += pnl
@@ -135,11 +141,12 @@ def _summarize(rows: list[dict]) -> tuple[str, str, float, float]:
     if unkeyed:
         stats += f" closes_without_cycle_id={unkeyed}"
     if tag_lines:
-        stats += "\nby strategy_tag:\n" + "\n".join(tag_lines)
+        stats += "\nby risk_profile/strategy_tag:\n" + "\n".join(tag_lines)
 
     sample = "\n".join(
         f"{r['action']} {r.get('marketName','')} {r.get('tokenName','')} "
-        f"cycle={r.get('cycle_id','')} tag={r.get('strategy_tag','')} "
+        f"cycle={r.get('cycle_id','')} profile={r.get('risk_profile','')} "
+        f"tag={r.get('strategy_tag','')} kelly_f={r.get('kelly_fraction','')} "
         f"stake/payout={r.get('usdcAmount','')} p_up={r.get('model_p_up','')} "
         f"mkt_p_up={r.get('market_implied_p_up','')} edge_bps={r.get('edge_bps','')} "
         f"ask={r.get('entry_ask','')} fill={r.get('fill_price','')} "

@@ -32,12 +32,29 @@ class EdgeOutput:
     entry_price: float
     liquidity_ok: bool
     rationale: str
+    # The model's probability for the side actually being bought — p_up flipped
+    # for a DOWN entry. This is the probability Kelly sizing needs: sizing off
+    # p_up on a DOWN trade would size every short as if it were a long.
+    model_p_side: float = 0.5
+    # Shares showing at the entry ask. risk_manager caps the stake at the
+    # notional that represents, so a thin book shrinks the trade instead of
+    # walking the order book to fill it. 0.0 means "unknown" and caps nothing.
+    entry_ask_size: float = 0.0
 
 
-def _depth_covers_stake(ask_size_shares: float, ask_price: float) -> bool:
+def _depth_is_tradeable(ask_size_shares: float, ask_price: float) -> bool:
+    """Whether there's enough top-of-book to bother with — not whether it covers
+    the full per-trade cap.
+
+    This used to require depth >= MAX_STAKE_PER_TRADE_USDC, which is harmless at
+    a $3 cap but would silently veto nearly every window once the aggressive
+    profile raises it to $12: the desk would go on finding edges and trade none
+    of them. The stake is capped at the depth actually showing instead (see
+    risk_manager.py), so all that's needed here is a floor.
+    """
     if ask_price <= 0:
         return False
-    return ask_size_shares * ask_price >= config.MAX_STAKE_PER_TRADE_USDC
+    return ask_size_shares * ask_price >= config.MIN_LIQUIDITY_USDC
 
 
 def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
@@ -59,7 +76,9 @@ def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
             "DOWN", ((1 - signal.p_up) - book.down_ask) * 10_000, book.down_ask, book.down_ask_size,
         )
 
-    liquidity_ok = _depth_covers_stake(ask_size, ask)
+    model_p_side = signal.p_up if side == "UP" else 1.0 - signal.p_up
+
+    liquidity_ok = _depth_is_tradeable(ask_size, ask)
     has_edge = (
         edge_bps >= config.MIN_EDGE_BPS_TO_TRADE
         and liquidity_ok
@@ -68,8 +87,9 @@ def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
 
     rationale = (
         f"side={side} edge={edge_bps:.0f}bps (threshold={config.MIN_EDGE_BPS_TO_TRADE}bps) "
-        f"entry_ask={ask:.3f} ask_size={ask_size:.1f} liquidity_ok={liquidity_ok} "
-        f"signal_confidence={signal.confidence:.2f}"
+        f"entry_ask={ask:.3f} ask_size={ask_size:.1f} depth=${ask_size * ask:.2f} "
+        f"(floor=${config.MIN_LIQUIDITY_USDC:.2f}) liquidity_ok={liquidity_ok} "
+        f"model_p_side={model_p_side:.3f} signal_confidence={signal.confidence:.2f}"
     )
 
     return EdgeOutput(
@@ -80,4 +100,6 @@ def assess(signal: SignalOutput, book: OrderBookTop) -> EdgeOutput:
         entry_price=ask,
         liquidity_ok=liquidity_ok,
         rationale=rationale,
+        model_p_side=model_p_side,
+        entry_ask_size=ask_size,
     )

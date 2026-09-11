@@ -17,6 +17,7 @@ import journal
 import kill_switch
 import quant_signal
 import risk_manager
+import risk_profiles
 import scheduler
 import state
 from edge import assess as assess_edge
@@ -64,6 +65,8 @@ def _execute_order(approved, market, sig, edge_result, cycle_id: str, remaining_
         "remaining_seconds": f"{remaining_seconds:.0f}",
         "twap_so_far_bps": f"{sig.twap_so_far_bps:+.2f}",
         "reference_degraded": "" if sig.reference_ok else "true",
+        "risk_profile": config.RISK_PROFILE_NAME,
+        "kelly_fraction": f"{approved.kelly_fraction:.4f}",
     }
 
     if config.DRY_RUN:
@@ -363,11 +366,43 @@ def run_window(tracker: RollingPriceTracker | None = None) -> None:
     log.info("Window closed: %s", market.slug)
 
 
+def _log_risk_profile() -> None:
+    """Say out loud, once, how much money this process is willing to risk.
+
+    Worth its own log lines: the profile is set by an environment variable, so
+    the only way to know which one a running desk picked up is to be told — and
+    "why is it staking $12?" is a question you want answered by line 3 of the
+    log, not by reading config.py hours later.
+    """
+    p = config.RISK_PROFILE
+    sizing = (
+        f"kelly x{p.kelly_multiplier:g} capped at {p.kelly_cap_fraction:.0%} of bankroll"
+        if p.kelly_enabled else "flat at the cap"
+    )
+    log.info(
+        "Risk profile: %s — max $%.2f/trade (%s), daily loss halt $%.2f (~%.1f full losses), "
+        "min edge %dbps, shrinkage K=%.2f, slippage %dbps, liquidity floor $%.2f",
+        p.name, p.max_stake_per_trade_usdc, sizing, p.daily_loss_limit_usdc,
+        p.losing_trades_to_halt, p.min_edge_bps_to_trade, p.probability_shrinkage_k,
+        p.max_price_slippage_bps, p.min_liquidity_usdc,
+    )
+    if p is not risk_profiles.STANDARD:
+        log.warning(
+            "HIGH RISK profile '%s' is active: it trades a wider set of edges at up to %.1fx the "
+            "standard stake and will tolerate a $%.2f daily loss (%.0f%% of the $%.2f starting "
+            "bankroll) before halting. Unset RISK_PROFILE to go back to 'standard'.",
+            p.name, p.max_stake_per_trade_usdc / risk_profiles.STANDARD.max_stake_per_trade_usdc,
+            p.daily_loss_limit_usdc, 100 * p.daily_loss_limit_usdc / config.STARTING_BANKROLL_USDC,
+            config.STARTING_BANKROLL_USDC,
+        )
+
+
 def main() -> None:
     os_signal.signal(os_signal.SIGINT, _handle_shutdown)
     os_signal.signal(os_signal.SIGTERM, _handle_shutdown)
 
     log.info("Starting PolymarketBTCBot. DRY_RUN=%s", config.DRY_RUN)
+    _log_risk_profile()
     if kill_switch.is_engaged():
         log.warning("Kill switch is engaged at startup — no orders will be placed until disengaged.")
 

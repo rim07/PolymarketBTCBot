@@ -39,6 +39,9 @@ def _edge(**overrides) -> EdgeOutput:
     return EdgeOutput(**base)
 
 
+from conftest import apply_profile as _patch_profile  # noqa: E402  (conftest also pins STANDARD by default)
+
+
 def _patch_common(monkeypatch, *, kill_engaged=False, daily_pnl=0.0, open_position=None, balance=425.0):
     monkeypatch.setattr("kill_switch.is_engaged", lambda: kill_engaged)
     fake_state = state.DailyState(trading_day="2026-01-01", realized_pnl_usdc=daily_pnl, open_position=open_position)
@@ -197,3 +200,116 @@ def test_price_within_slippage_buffer_is_approved(monkeypatch):
         _edge(entry_price=0.35),
     )
     assert result is not None
+
+
+def test_stake_is_capped_at_visible_depth(monkeypatch):
+    """Sizing past the top of book means the remainder either rests unfilled or
+    walks up to prices the edge was never computed against. 5 shares at 0.40 is
+    $2 available, below the $3 per-trade cap, so depth is what binds."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(
+        _decision(stake_usdc=5.0), _market(), "111", "222", "cycd1",
+        _edge(entry_ask_size=5.0),
+    )
+    assert result is not None
+    assert result.stake_usdc == pytest.approx(2.0)
+    assert result.size_shares == pytest.approx(5.0)
+
+
+def test_unknown_depth_imposes_no_cap(monkeypatch):
+    # entry_ask_size defaults to 0.0 meaning "unknown"; that must not be read as
+    # "no liquidity" and silently zero every trade.
+    import config
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(_decision(stake_usdc=5.0), _market(), "111", "222", "cycd2", _edge())
+    assert result is not None
+    assert result.stake_usdc == pytest.approx(config.MAX_STAKE_PER_TRADE_USDC)
+
+
+# --- aggressive (HIGH RISK / HIGH REWARD) profile ---------------------------
+
+
+def test_aggressive_profile_sizes_by_kelly_up_to_its_cap(monkeypatch):
+    import risk_profiles
+    _patch_common(monkeypatch, balance=425.0)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    # p_side 0.75 at a 0.40 price is a large edge: f* ~= 0.58, tenth-Kelly makes
+    # that ~5.8% of $425 = ~$24.79, and the absolute per-trade cap cuts it to $12.
+    result = risk_manager.evaluate(
+        _decision(stake_usdc=1.0), _market(), "111", "222", "cyck1",
+        _edge(model_p_side=0.75),
+    )
+    assert result is not None
+    assert result.stake_usdc == pytest.approx(risk_profiles.AGGRESSIVE.max_stake_per_trade_usdc, abs=0.01)
+    # The LLM asked for $1 and got $12: under Kelly its stake figure is advisory,
+    # so this is the intended override, not a cap being breached.
+    assert result.kelly_fraction > 0.0
+
+
+def test_aggressive_profile_scales_down_with_the_bankroll(monkeypatch):
+    """The Kelly cap is a fraction of live collateral, so a drawn-down wallet
+    automatically trades smaller. That de-leveraging is the only thing standing
+    between a losing streak and the rest of the bankroll."""
+    import risk_profiles
+    _patch_common(monkeypatch, balance=80.0)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(
+        _decision(stake_usdc=12.0), _market(), "111", "222", "cyck2",
+        _edge(model_p_side=0.75),
+    )
+    assert result is not None
+    # Same edge as the test above, so the same ~5.8% fraction — but of $80, not
+    # $425, so ~$4.67 instead of the $12 cap.
+    assert result.stake_usdc < 5.0
+    assert result.stake_usdc > risk_profiles.AGGRESSIVE.min_stake_usdc
+
+
+def test_aggressive_profile_rejects_a_trade_with_no_growth_edge(monkeypatch):
+    """The safety property that makes full Kelly tolerable: an entry whose
+    probability doesn't beat the price it pays is rejected outright, however
+    confidently the LLM proposed it. Without this, "high risk" would just mean
+    staking the cap on everything the edge-detector flagged."""
+    import risk_profiles
+    _patch_common(monkeypatch)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(
+        _decision(stake_usdc=12.0, limit_price=0.60), _market(), "111", "222", "cyck3",
+        _edge(entry_price=0.60, model_p_side=0.55),  # 0.55 < 0.60: pays more than it's worth
+    )
+    assert result is None
+
+
+def test_aggressive_profile_still_obeys_every_hard_gate(monkeypatch):
+    """A profile changes what the caps are, never whether they're checked."""
+    import risk_profiles
+    edge = _edge(model_p_side=0.75)
+
+    _patch_common(monkeypatch, kill_engaged=True)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    assert risk_manager.evaluate(_decision(), _market(), "111", "222", "cyck4a", edge) is None
+
+    _patch_common(monkeypatch, daily_pnl=-risk_profiles.AGGRESSIVE.daily_loss_limit_usdc)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    assert risk_manager.evaluate(_decision(), _market(), "111", "222", "cyck4b", edge) is None
+
+    # A drained wallet stops the desk. Note it does NOT stop via the
+    # insufficient-collateral gate: Kelly asks for a fraction of the balance, so
+    # it always "affords" itself. What stops it is the profile's minimum stake —
+    # which is why that floor exists.
+    _patch_common(monkeypatch, balance=0.50)
+    _patch_profile(monkeypatch, risk_profiles.AGGRESSIVE)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    assert risk_manager.evaluate(_decision(), _market(), "111", "222", "cyck4c", edge) is None
+
+
+def test_standard_profile_records_no_kelly_fraction(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr("clob_client.get_min_order_size", lambda token_id: 0.0)
+    result = risk_manager.evaluate(_decision(), _market(), "111", "222", "cyck5", _edge(model_p_side=0.75))
+    assert result is not None
+    assert result.kelly_fraction == 0.0

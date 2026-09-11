@@ -18,6 +18,14 @@ def review(period_label: str, stats_summary: str, sample_rows_text: str) -> Perf
         f"Review period: {period_label}\n\n"
         f"Aggregate stats:\n{stats_summary}\n\n"
         f"Sample trade rows:\n{sample_rows_text}\n\n"
+        # The profile matters more than any single parameter: stats broken down
+        # by risk_profile/strategy_tag can only be interpreted against the
+        # thresholds each profile was actually running.
+        f"Active risk profile: {config.RISK_PROFILE_NAME} "
+        f"(kelly_enabled={config.KELLY_ENABLED}, "
+        f"kelly_cap_fraction={config.KELLY_CAP_FRACTION}, "
+        f"DAILY_LOSS_LIMIT_USDC={config.DAILY_LOSS_LIMIT_USDC}, "
+        f"PROBABILITY_SHRINKAGE_K={config.PROBABILITY_SHRINKAGE_K})\n"
         f"Current config: MIN_EDGE_BPS_TO_TRADE={config.MIN_EDGE_BPS_TO_TRADE}, "
         f"MAX_STAKE_PER_TRADE_USDC={config.MAX_STAKE_PER_TRADE_USDC}, "
         f"HEAD_TRADER_EFFORT={config.HEAD_TRADER_EFFORT}, "

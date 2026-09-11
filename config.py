@@ -3,6 +3,11 @@
 Nothing here should be writable by an LLM at runtime — the Performance
 Review agent can *suggest* changes to these values, but a human edits
 this file, not the bot.
+
+The risk numbers come from the active *risk profile* (see risk_profiles.py),
+selected with the RISK_PROFILE environment variable and defaulting to
+"standard". They're still exposed as plain module constants here, so every
+consumer reads them the same way it always has and only the values change.
 """
 import os
 from pathlib import Path
@@ -10,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 import truststore
 from dotenv import load_dotenv
+
+import risk_profiles
 
 # Use the OS trust store (not just certifi's bundle) for all TLS verification.
 # Needed on networks that do corporate TLS inspection (e.g. Zscaler) — Windows
@@ -27,21 +34,32 @@ LOG_DIR.mkdir(exist_ok=True)
 
 # --- Bankroll / risk limits (hard caps, enforced in risk_manager.py) ---
 STARTING_BANKROLL_USDC = 425.00
-MAX_STAKE_PER_TRADE_USDC = 3.00  # was 5.00 -- per 2026-09-10 review: realized 55.6% win rate is
-                                  # below the ~57-59% payout-implied breakeven; Kelly is ~zero
-                                  # to slightly negative until calibration is re-verified on
-                                  # more trades, so size for survival, not growth
-DAILY_LOSS_LIMIT_USDC = 42.50  # 10% of starting bankroll
+
+# Which profile's numbers to run. "standard" is the conservative desk that was
+# approved originally; "aggressive" is the HIGH RISK / HIGH REWARD profile. Read
+# risk_profiles.py before switching — in particular the note that the desk's edge
+# is currently unvalidated against the corrected settlement model, which is the
+# whole reason the aggressive profile sizes by Kelly rather than by a flat bigger
+# number. An unrecognised name raises at import rather than defaulting.
+RISK_PROFILE_NAME = os.environ.get("RISK_PROFILE", "standard").strip().lower() or "standard"
+RISK_PROFILE = risk_profiles.get(RISK_PROFILE_NAME)
+
+MAX_STAKE_PER_TRADE_USDC = RISK_PROFILE.max_stake_per_trade_usdc
+MIN_STAKE_USDC = RISK_PROFILE.min_stake_usdc
+DAILY_LOSS_LIMIT_USDC = RISK_PROFILE.daily_loss_limit_usdc
+MAX_PRICE_SLIPPAGE_BPS = RISK_PROFILE.max_price_slippage_bps  # limit_price may not exceed the observed entry_price by more than this
+MIN_EDGE_BPS_TO_TRADE = RISK_PROFILE.min_edge_bps_to_trade
+PROBABILITY_SHRINKAGE_K = RISK_PROFILE.probability_shrinkage_k  # quant_signal.py: p_used = 0.5 + K*(p_raw - 0.5)
+MIN_LIQUIDITY_USDC = RISK_PROFILE.min_liquidity_usdc
+KELLY_ENABLED = RISK_PROFILE.kelly_enabled
+KELLY_MULTIPLIER = RISK_PROFILE.kelly_multiplier
+KELLY_CAP_FRACTION = RISK_PROFILE.kelly_cap_fraction
+
+# Not profile-controlled: risk_manager.py enforces this with a single position
+# slot and raises at import if it isn't 1. Raising it needs that check rewritten
+# to track a list first, or the cap is simply unenforced.
 MAX_CONCURRENT_POSITIONS = 1
-MIN_EDGE_BPS_TO_TRADE = 2400  # was 1500 -- sampled 1500-1900bps entries went 2/8, >=1900bps went 4/7;
-                               # tune only via config.py, never at runtime
-MAX_PRICE_SLIPPAGE_BPS = 200  # limit_price may not exceed the observed entry_price by more than this
-PROBABILITY_SHRINKAGE_K = 0.40  # applied in quant_signal.py: p_used = 0.5 + K*(p_raw - 0.5).
-                                  # Added per 2026-09-10 review: the quant signal is badly
-                                  # overconfident (stated p averaged 0.731 on entries bought
-                                  # against a realized 55.6%, an implied K of ~0.24) -- 0.40 is
-                                  # a conservative middle setting pending a proper fit on more
-                                  # closed trades with logged entry prices.
+
 DAY_BOUNDARY_TZ = ZoneInfo("America/New_York")
 
 # --- Timing ---

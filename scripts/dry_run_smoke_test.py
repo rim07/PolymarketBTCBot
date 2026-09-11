@@ -93,13 +93,41 @@ def main() -> None:
             )
         return "TWAP-over-window vs. window-start price, per Chainlink (unchanged)"
 
+    def check_risk_profile():
+        """Sanity-checks the active profile against the money actually in the
+        wallet. The profile's own numbers are quoted against a $425 starting
+        bankroll; if the real balance has drifted a long way from that, the
+        headline "10% daily loss limit" is no longer 10% of anything."""
+        import clob_client
+
+        p = config.RISK_PROFILE
+        balance = clob_client.get_collateral_balance_usdc()
+        loss_pct = 100 * p.daily_loss_limit_usdc / balance if balance > 0 else float("inf")
+        detail = (
+            f"{p.name}: max ${p.max_stake_per_trade_usdc:.2f}/trade, daily halt "
+            f"${p.daily_loss_limit_usdc:.2f} = {loss_pct:.0f}% of the ${balance:.2f} on hand "
+            f"(~{p.losing_trades_to_halt:.1f} full losses), min edge {p.min_edge_bps_to_trade}bps, "
+            f"K={p.probability_shrinkage_k}"
+        )
+        if balance > 0 and p.daily_loss_limit_usdc > balance * 0.5:
+            raise RuntimeError(
+                f"{detail} — a daily loss limit over half the wallet is not a limit. Lower "
+                f"daily_loss_limit_usdc for the '{p.name}' profile or fund the wallet."
+            )
+        if balance > 0 and p.max_stake_per_trade_usdc > balance:
+            raise RuntimeError(f"{detail} — per-trade cap exceeds the entire balance.")
+        return detail
+
     def check_chainlink_feed():
         from price_feed import fetch_chainlink_btcusd
         price, updated_at = fetch_chainlink_btcusd()
         return f"${price:,.2f} (updated_at={updated_at})"
 
+    print(f"Active risk profile: {config.RISK_PROFILE_NAME} (set with the RISK_PROFILE env var)\n")
+
     ok &= check("Anthropic API reachable", check_anthropic)
     ok &= check("CLOB collateral balance / deposit wallet", check_clob_balance)
+    ok &= check("Risk profile sized sanely against the real balance", check_risk_profile)
     ok &= check("Relayer API key (needed for redemption)", check_relayer_key)
     ok &= check("Market discovery (current window)", check_market_discovery)
     ok &= check("Settlement rule still matches the model", check_settlement_rule)

@@ -31,6 +31,12 @@ _JOURNAL_FIELDS = [
     # reference_degraded flags entries priced off a fallback reference (no
     # pre-roll history), which should be analysed separately.
     "twap_so_far_bps", "reference_degraded",
+    # Which risk profile placed the trade, and the Kelly fraction that sized it
+    # (blank/0 under flat sizing). Trades from different profiles must never be
+    # pooled when fitting anything: the profiles use different edge thresholds
+    # and a different shrinkage K, so they are samples from different strategies
+    # that happen to share a journal.
+    "risk_profile", "kelly_fraction",
 ]
 
 _RISK_LOG_FIELDS = ["timestamp", "cycle_id", "market_slug", "approved", "reason", "decision_json"]
