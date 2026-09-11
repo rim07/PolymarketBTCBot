@@ -20,6 +20,7 @@ import risk_manager
 import scheduler
 import state
 from edge import assess as assess_edge
+from llm.client import PermanentLLMError
 from llm.head_trader_agent import decide as head_trader_decide
 from market_discovery import MarketNotFoundError, discover_market
 from price_feed import RollingPriceTracker, fetch_spot_price
@@ -192,8 +193,18 @@ def run_window() -> None:
                         remaining_seconds=remaining, daily_pnl_usdc=daily_state.realized_pnl_usdc,
                         position_already_open=False,
                     )
+                except PermanentLLMError as e:
+                    # Won't fix itself on the next tick — bad schema, dead key,
+                    # rejected request. Without ERROR-level noise here the desk
+                    # would go on finding edges and never trade a single one,
+                    # with nothing in the log louder than a warning to say why.
+                    log.error(
+                        "[%s] Head-Trader call failed permanently — no trade will be placed until "
+                        "this is fixed: %s", cycle_id, e,
+                    )
+                    decision = None
                 except Exception as e:
-                    log.warning("[%s] Head-Trader call failed: %s", cycle_id, e)
+                    log.warning("[%s] Head-Trader call failed (transient): %s", cycle_id, e)
                     decision = None
 
                 if decision is not None:

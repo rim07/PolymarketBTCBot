@@ -54,5 +54,12 @@ def decide(
         user_content=user_content,
         output_format=TradeDecision,
         effort="low",
-        max_tokens=1024,
+        # 1024 was a silent trade-killer. Adaptive thinking is on and its tokens
+        # come out of max_tokens, so a slightly-longer-than-usual deliberation
+        # exhausts the budget before any text block is emitted — parsed_output
+        # comes back None, client.py raises, and main.py logs a warning and
+        # skips. Same failure that hit performance_review_agent at 4096. This is
+        # a ceiling, not a charge: normal responses are ~150 tokens and cost the
+        # same at 4096 as at 1024.
+        max_tokens=4096,
     )

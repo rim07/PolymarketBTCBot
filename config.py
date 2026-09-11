@@ -50,7 +50,13 @@ FAST_TICK_SECONDS = 18       # cadence for the first FAST_PHASE_SECONDS of a win
 FAST_PHASE_SECONDS = 105
 SLOW_TICK_SECONDS = 35        # cadence for the remainder of the window
 DISCOVERY_TIMEOUT_SECONDS = 8
-LLM_CALL_TIMEOUT_SECONDS = 12
+# 12s was too tight: the Head-Trader model runs adaptive thinking (on by
+# default when no `thinking` param is sent), so tail latency regularly exceeds
+# it — and a timed-out call means a *skipped candidate edge*, which is the rare
+# and valuable event this whole desk exists to catch. Retries are disabled for
+# this call (see llm/client.py) so a slow call costs one timeout, not three;
+# the tick loop's next pass ~18s later is the real retry.
+LLM_CALL_TIMEOUT_SECONDS = 25
 
 # --- Market discovery (Polymarket "Bitcoin Up or Down" 5-min series) ---
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
