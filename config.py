@@ -85,6 +85,13 @@ RELAYER_API_KEY_ADDRESS = os.environ.get("RELAYER_API_KEY_ADDRESS", "")
 # --- Anthropic ---
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 HEAD_TRADER_MODEL = "claude-sonnet-5"
+# "low" is meant for subagents and simple classification; this is the single
+# call that decides whether to commit real capital, so it runs at "medium".
+# At 10-30 qualifying edges/day the extra thinking tokens cost cents. The real
+# cost is latency, which is why LLM_CALL_TIMEOUT_SECONDS stays capped at 25s:
+# a decision built on a 30-second-old order book is worse than no decision, and
+# a timeout just defers to the next tick with a fresh book.
+HEAD_TRADER_EFFORT = "medium"
 PERFORMANCE_REVIEW_MODEL = "claude-opus-5"
 
 # --- Safety ---

@@ -53,7 +53,7 @@ def decide(
         system=system,
         user_content=user_content,
         output_format=TradeDecision,
-        effort="low",
+        effort=config.HEAD_TRADER_EFFORT,
         # 1024 was a silent trade-killer. Adaptive thinking is on and its tokens
         # come out of max_tokens, so a slightly-longer-than-usual deliberation
         # exhausts the budget before any text block is emitted — parsed_output

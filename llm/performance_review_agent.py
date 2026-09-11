@@ -20,6 +20,7 @@ def review(period_label: str, stats_summary: str, sample_rows_text: str) -> Perf
         f"Sample trade rows:\n{sample_rows_text}\n\n"
         f"Current config: MIN_EDGE_BPS_TO_TRADE={config.MIN_EDGE_BPS_TO_TRADE}, "
         f"MAX_STAKE_PER_TRADE_USDC={config.MAX_STAKE_PER_TRADE_USDC}, "
+        f"HEAD_TRADER_EFFORT={config.HEAD_TRADER_EFFORT}, "
         f"FAST_TICK_SECONDS={config.FAST_TICK_SECONDS}, SLOW_TICK_SECONDS={config.SLOW_TICK_SECONDS}"
     )
     return parse_structured(
