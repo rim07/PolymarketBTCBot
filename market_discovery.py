@@ -33,8 +33,19 @@ class MarketInfo:
 
 def current_window_start(now: datetime | None = None) -> datetime:
     now = now or datetime.now(timezone.utc)
-    floored_minute = (now.minute // 5) * 5
-    return now.replace(minute=floored_minute, second=0, microsecond=0)
+    # discover_market() is called right at the boundary crossing, from the tail
+    # of main.py's pre-roll loop -- which exits up to ~0.75s *before* the true
+    # boundary (`remaining <= 0.75`). Flooring a `now` that's even a fraction
+    # of a second early lands on the *previous* bucket, mislabelling the whole
+    # window one interval too early: window_end (window_start + WINDOW_SECONDS)
+    # then equals roughly the real current moment instead of 5 minutes out, so
+    # the loop sees remaining≈0 from its first tick and closes the window
+    # within a single slow-cadence tick instead of running its real 300s. A
+    # +2s nudge before flooring comfortably covers that pre-roll slop while
+    # staying well inside the window on every other call.
+    floor_target = now + timedelta(seconds=2)
+    floored_minute = (floor_target.minute // 5) * 5
+    return floor_target.replace(minute=floored_minute, second=0, microsecond=0)
 
 
 def window_slug(window_start: datetime) -> str:
