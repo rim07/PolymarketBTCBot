@@ -273,7 +273,7 @@ def run_window(tracker: RollingPriceTracker | None = None) -> None:
     # wall-clock, so the integral in quant_signal has to share that frame.
     window_start_ts = market.window_start.timestamp()
     window_end_ts = market.window_end.timestamp()
-    logged_no_edge_diag = False
+    last_no_edge_diag = None
 
     while True:
         now_ts = time.time()
@@ -361,17 +361,22 @@ def run_window(tracker: RollingPriceTracker | None = None) -> None:
                         _execute_order(approved, market, sig, edge_result, cycle_id, remaining)
             else:
                 journal.write_risk_log_row(cycle_id, market.slug, approved=False, reason="no_edge")
-                if not logged_no_edge_diag:
-                    # Otherwise the gate values (edge_bps, conviction_ok, price_ok,
-                    # liquidity_ok) are invisible whenever has_edge is False, which is
-                    # ~95% of ticks — a long dry spell is then indistinguishable in the
-                    # log from a silently broken gate. One line per window is enough to
-                    # tell the two apart without spamming every tick.
-                    log.info("[%s] No edge this tick: %s", cycle_id, edge_result.rationale)
-                    logged_no_edge_diag = True
+                # Captured every tick and only logged once at window-close (below) —
+                # the *last* miss, not the first. The first tick of a window is
+                # structurally uninformative (no accumulated deviation yet, so
+                # p_up=0.5/confidence=0 there is correct, not a symptom of anything);
+                # the last tick is where a real, mature view would show up if one
+                # ever formed.
+                last_no_edge_diag = (cycle_id, sig.rationale, edge_result.rationale)
 
         time.sleep(scheduler.tick_interval_seconds(elapsed))
 
+    if last_no_edge_diag is not None:
+        cycle_id, signal_rationale, edge_rationale = last_no_edge_diag
+        log.info(
+            "[%s] Last no-edge check this window — signal: %s | edge: %s",
+            cycle_id, signal_rationale, edge_rationale,
+        )
     log.info("Window closed: %s", market.slug)
 
 
