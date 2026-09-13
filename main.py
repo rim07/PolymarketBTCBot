@@ -273,6 +273,7 @@ def run_window(tracker: RollingPriceTracker | None = None) -> None:
     # wall-clock, so the integral in quant_signal has to share that frame.
     window_start_ts = market.window_start.timestamp()
     window_end_ts = market.window_end.timestamp()
+    logged_no_edge_diag = False
 
     while True:
         now_ts = time.time()
@@ -360,6 +361,14 @@ def run_window(tracker: RollingPriceTracker | None = None) -> None:
                         _execute_order(approved, market, sig, edge_result, cycle_id, remaining)
             else:
                 journal.write_risk_log_row(cycle_id, market.slug, approved=False, reason="no_edge")
+                if not logged_no_edge_diag:
+                    # Otherwise the gate values (edge_bps, conviction_ok, price_ok,
+                    # liquidity_ok) are invisible whenever has_edge is False, which is
+                    # ~95% of ticks — a long dry spell is then indistinguishable in the
+                    # log from a silently broken gate. One line per window is enough to
+                    # tell the two apart without spamming every tick.
+                    log.info("[%s] No edge this tick: %s", cycle_id, edge_result.rationale)
+                    logged_no_edge_diag = True
 
         time.sleep(scheduler.tick_interval_seconds(elapsed))
 
